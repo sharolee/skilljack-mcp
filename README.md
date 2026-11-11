@@ -65,6 +65,41 @@ skilljack-mcp --http=3000 /path/to/skills
 
 **Catalog channel:** `--catalog=<instructions|tool-description>` (or `SKILLJACK_CATALOG`) picks which single channel delivers the `<available_skills>` catalog — never both. `instructions` (default): server `instructions`, sent in the `initialize` handshake so it survives tool-search deferral; on stdio it is frozen at startup — skill changes need a restart (over HTTP, newly connecting clients always get a current catalog). `tool-description` is **not recommended** and is retained only as a legacy escape hatch (and as the control condition in the evals): the `load-skill` tool description is invisible to clients that defer MCP tool descriptions (e.g. Claude Code tool search, the modern default), so auto-activation silently breaks unless the client sets `ENABLE_TOOL_SEARCH=false`; and its one advantage — live catalog refresh via `tools/listChanged` — is a prompt-cache trap, because tool definitions sit at the top of the cached prompt prefix, so every refresh invalidates the entire cache (tools + system prompt + conversation history) and re-writes it at cache-write prices. Measured 2026-07-06 ([#78](https://github.com/olaservo/skilljack-mcp/issues/78)): it has no cost advantage over `instructions` in steady state either.
 
+## Fork: listing-only resource filter
+
+This fork adds a **listing-only** resource filter. Skills that ship a large
+runtime asset library (design kits, images, fonts, archives) otherwise bloat
+`resources/list` and the SEP-2640 `skills/list` manifests with thousands of
+URIs, which pushes the skill catalog out of context and can breach the
+per-skill interop limits (512 files / 16 MB).
+
+By default, automatic listings omit:
+
+- directories named `assets/` (at any depth), and
+- binary / design asset extensions (`.svg`, `.png`, `.jpg`, `.webp`, `.pdf`,
+  `.zip`, fonts, media, compiled artefacts, …).
+
+Instruction and data files — `SKILL.md`, `references/*.md`, `scripts/*.mjs`,
+`.json`, `.csv`, `.py`, `.html`, `.css`, `.txt` — are always kept.
+
+**The filter affects listings only.** `resources/read`,
+`resources/directory/read`, and `skill-resource <path>` still serve every
+eligible file on demand, so a skill's `assets/...` references keep working —
+the model pays for an asset only when a task actually needs it.
+
+Configuration (CLI flag > environment variable > default):
+
+| CLI flag | Environment variable | Default |
+| --- | --- | --- |
+| `--resource-filter=off` | `SKILLJACK_RESOURCE_FILTER=off` | on |
+| `--exclude-dirs=assets,media` | `SKILLJACK_EXCLUDE_DIRS=assets,media` | `assets` |
+| `--exclude-extensions=.png,.svg` | `SKILLJACK_EXCLUDE_EXTENSIONS=.png,.svg` | 40+ binary types |
+
+Use the `=<value>` form: a bare `--exclude-dirs assets` would make `assets`
+look like a skill directory. An empty value disables that dimension, so
+`SKILLJACK_EXCLUDE_DIRS=` keeps directories while still filtering extensions.
+The active policy is printed to stderr at startup.
+
 ## Configuration and Skills Display UI
 
 This server comes along with a [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/)-based UI for clients that support it.  Instead of fiddling with config files or environment variables, you can just configure your skills locations and skill visiblity directly in your chat window. Locations set in the UI are saved to `~/.skilljack/config.json` and take effect only when no directories are given on the command line or in `SKILLS_DIR`. The UI is not available with `--static` or `--http`.

@@ -19,6 +19,11 @@
  *   --static  Freeze skills list at startup. Disables file watching and
  *             tools/prompts listChanged notifications. Resource subscriptions
  *             remain fully dynamic.
+ *   --resource-filter=off          List every supporting file (upstream behaviour).
+ *   --exclude-dirs=a,b             Directory names to omit from listings (default: assets).
+ *   --exclude-extensions=.png,.svg Extensions to omit from listings.
+ *                                  Listing-only: explicit reads still work on demand.
+ *                                  All three have SKILLJACK_* env-var equivalents.
  */
 
 import { McpServer, RegisteredTool } from "@modelcontextprotocol/server";
@@ -37,6 +42,7 @@ import {
   CatalogMode,
   ToolsMode,
 } from "./skill-tool.js";
+import { describeResourceFilter } from "./resource-filter.js";
 import { pruneDigestCache } from "./skill-entries.js";
 import { createSkillsExtension, registerSkillResources } from "./skill-resources.js";
 import { registerSkillPrompts, registerUiPrompts, refreshPrompts, PromptRegistry } from "./skill-prompts.js";
@@ -836,6 +842,7 @@ async function main() {
   if (isStatic) {
     console.error("Static mode enabled - skills list frozen at startup");
   }
+  console.error(describeResourceFilter());
 
   // Discover skills at startup
   let skills = discoverSkillsFromDirs(currentSkillsDirs, currentSourceMap);

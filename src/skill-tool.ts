@@ -21,6 +21,12 @@ import {
   getModelInvocableSkills,
   buildSkillResourceUri,
 } from "./skill-discovery.js";
+import {
+  getResourceFilter,
+  isExcludedDirName,
+  isExcludedFilePath,
+  type ResourceFilter,
+} from "./resource-filter.js";
 
 /**
  * Shared state for dynamic skill management.
@@ -340,17 +346,32 @@ function isServableSize(absPath: string): boolean {
 /**
  * List the supporting files of a skill: the single enumeration behind the
  * SEP-2640 entry manifest, resources/list, resource completions and the
- * skill-resource tool, so every surface agrees on which files are served.
+ * skill-resource tool, so every surface agrees on which files are *listed*.
+ *
+ * Fork: filtered by {@link getResourceFilter} so heavy asset libraries do not
+ * bloat automatic listings. The filter is listing-only — explicit reads
+ * (`resources/read`, `resources/directory/read`, `skill-resource <path>`) stay
+ * available, which is why the read-time guards below deliberately do NOT
+ * consult it. A host that constructs a URI from SKILL.md text still works.
+ *
  * Skips hidden entries, node_modules, symlinks, SKILL.md itself and files
- * over MAX_FILE_SIZE (a file the server refuses to read must not appear in
- * the manifest, since a host treats the manifest as the complete, readable
- * set). Limits recursion depth to prevent DoS from deeply nested directories.
+ * over MAX_FILE_SIZE (a file the server refuses to read must never appear in
+ * the manifest). Limits recursion depth to prevent DoS from deep nesting.
  */
-export function listSkillFiles(skillDir: string, subPath: string = "", depth: number = 0): string[] {
+export function listSkillFiles(
+  skillDir: string,
+  subPath: string = "",
+  depth: number = 0,
+  filter?: ResourceFilter
+): string[] {
   // Prevent excessive recursion
   if (depth > MAX_DIRECTORY_DEPTH) {
     return [];
   }
+
+  // Resolve once per top-level walk; recursive calls pass the same object so
+  // the policy cannot change halfway through one listing.
+  const activeFilter = filter ?? getResourceFilter();
 
   const files: string[] = [];
   const dirPath = path.join(skillDir, subPath);
@@ -369,18 +390,24 @@ export function listSkillFiles(skillDir: string, subPath: string = "", depth: nu
     }
 
     if (entry.isDirectory()) {
-      // Skip node_modules and hidden directories
-      if (entry.name !== "node_modules" && !entry.name.startsWith(".")) {
-        files.push(...listSkillFiles(skillDir, relativePath, depth + 1));
+      // Skip node_modules, hidden directories, and configured asset dirs
+      if (
+        entry.name !== "node_modules" &&
+        !entry.name.startsWith(".") &&
+        !isExcludedDirName(entry.name, activeFilter)
+      ) {
+        files.push(...listSkillFiles(skillDir, relativePath, depth + 1, activeFilter));
       }
     } else {
-      // Skip SKILL.md (use skill tool for that), and hidden files (e.g. .env,
+      // Skip SKILL.md (use skill tool for that), hidden files (e.g. .env,
       // .npmrc) so secrets sitting in a skill dir are never enumerated into
-      // resources/list or surfaced by the skill-resource tool.
+      // resources/list or surfaced by the skill-resource tool, plus filtered
+      // asset/binary extensions.
       if (
         !entry.name.startsWith(".") &&
         entry.name !== "SKILL.md" &&
         entry.name !== "skill.md" &&
+        !isExcludedFilePath(relativePath, activeFilter) &&
         isServableSize(path.join(dirPath, entry.name))
       ) {
         files.push(relativePath.replace(/\\/g, "/"));

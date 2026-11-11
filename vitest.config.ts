@@ -4,6 +4,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Upstream tests exercise the unfiltered contract. The fork enables the
+    // resource filter by default; the new resource-filter.test.ts opts in
+    // explicitly so both behaviours stay covered.
+    env: { SKILLJACK_RESOURCE_FILTER: "off" },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
