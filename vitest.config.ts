@@ -7,7 +7,10 @@ export default defineConfig({
     // Upstream tests exercise the unfiltered contract. The fork enables the
     // resource filter by default; the new resource-filter.test.ts opts in
     // explicitly so both behaviours stay covered.
-    env: { SKILLJACK_RESOURCE_FILTER: "off" },
+    // Upstream catalog tests expect the flat <available_skills> list. Domain
+    // routing is opt-in per test via domain-router.test.ts / an explicit map;
+    // disable the repo-root domains.json default for the rest of the suite.
+    env: { SKILLJACK_RESOURCE_FILTER: "off", SKILLJACK_DOMAIN_MAP: "off" },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

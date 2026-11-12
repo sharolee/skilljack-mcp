@@ -1,0 +1,143 @@
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Client } from "@modelcontextprotocol/client";
+import { McpServer, InMemoryTransport } from "@modelcontextprotocol/server";
+import { registerSkillTool } from "./skill-tool.js";
+import { createTestSkill, createTestSkillState, createTestSource } from "./__test-helpers__/helpers.js";
+import { SkillState } from "./skill-tool.js";
+
+/**
+ * Exercise the fork's `route-domain` tool over a real in-memory MCP connection,
+ * with a real on-disk SKILL.md so `load-skill` proves that routing is a
+ * discovery-layer concern only: a domain-gated skill stays fully loadable.
+ */
+describe("route-domain tool", () => {
+  let tmpRoot: string;
+  let mapFile: string;
+  let state: SkillState;
+  let server: McpServer;
+  let client: Client;
+  const savedEnv = process.env.SKILLJACK_DOMAIN_MAP;
+  const savedArgv = process.argv;
+
+  function makeSkill(base: string, body: string) {
+    const dir = path.join(tmpRoot, base);
+    fs.mkdirSync(dir, { recursive: true });
+    const skillMd = path.join(dir, "SKILL.md");
+    fs.writeFileSync(
+      skillMd,
+      `---\nname: ${base}\ndescription: ${base} description\n---\n\n${body}\n`,
+      "utf-8"
+    );
+    return createTestSkill({
+      name: `local__${base}`,
+      baseName: base,
+      description: `${base} description`,
+      path: skillMd,
+      source: createTestSource(),
+      frontmatter: { name: base, description: `${base} description` },
+    });
+  }
+
+  beforeAll(async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sj-route-domain-"));
+    const designA = makeSkill("design-mobile-apps", "# Mobile design body");
+    const designB = makeSkill("design-taste-frontend", "# Tasty frontend body");
+    const testSkill = makeSkill("webapp-testing", "# Webapp testing body");
+    const globalA = makeSkill("caveman", "# Caveman body");
+    const globalB = makeSkill("crafting-effective-readmes", "# README body");
+
+    mapFile = path.join(tmpRoot, "domains.json");
+    fs.writeFileSync(
+      mapFile,
+      JSON.stringify({
+        version: 1,
+        domains: [
+          { name: "design", description: "UI/UX design", triggers: ["design", "UI"], skills: ["design-mobile-apps", "design-taste-frontend"] },
+          { name: "test", description: "Webapp testing", skills: ["webapp-testing"] },
+        ],
+      }),
+      "utf-8"
+    );
+    process.env.SKILLJACK_DOMAIN_MAP = mapFile;
+    process.argv = ["node", "index.js"];
+
+    state = createTestSkillState([designA, designB, testSkill, globalA, globalB]);
+    server = new McpServer({ name: "test", version: "0.0.1" });
+    registerSkillTool(server, state, "instructions");
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    client = new Client({ name: "test-client", version: "0.0.1" });
+    await client.connect(clientTransport);
+  });
+
+  afterAll(async () => {
+    await client.close();
+    await server.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    process.argv = savedArgv;
+    if (savedEnv === undefined) delete process.env.SKILLJACK_DOMAIN_MAP;
+    else process.env.SKILLJACK_DOMAIN_MAP = savedEnv;
+  });
+
+  it("registers the route-domain tool alongside load-skill and skill-resource", async () => {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("route-domain");
+    expect(names).toContain("load-skill");
+    expect(names).toContain("skill-resource");
+  });
+
+  it("lists domains with no arguments", async () => {
+    const res = await client.callTool({ name: "route-domain", arguments: {} });
+    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    expect(text).toContain("<domains>");
+    expect(text).toContain("<name>design</name>");
+    expect(text).toContain("<skill_count>2</skill_count>");
+    expect(text).toContain("<name>test</name>");
+    expect(text).not.toContain("<name>design-mobile-apps</name>");
+  });
+
+  it("expands a named domain into catalog skill entries", async () => {
+    const res = await client.callTool({ name: "route-domain", arguments: { domain: "design" } });
+    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    expect(text).toContain("<available_skills>");
+    expect(text).toContain("<name>local__design-mobile-apps</name>");
+    expect(text).toContain("<name>local__design-taste-frontend</name>");
+    expect(text).toContain("<uri>skill://test/design-mobile-apps/SKILL.md</uri>");
+    expect(text).not.toContain("<name>local__caveman</name>");
+    expect(text).not.toContain("<name>local__webapp-testing</name>");
+  });
+
+  it("is case-insensitive on domain names", async () => {
+    const res = await client.callTool({ name: "route-domain", arguments: { domain: "TEST" } });
+    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    expect(text).toContain("<name>local__webapp-testing</name>");
+  });
+
+  it("returns an error with available domains for an unknown domain", async () => {
+    const res = await client.callTool({ name: "route-domain", arguments: { domain: "nope" } });
+    expect(res.isError).toBe(true);
+    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    expect(text).toContain('Unknown domain "nope"');
+    expect(text).toContain("design, test");
+  });
+
+  it("still loads a domain-gated skill by name via load-skill", async () => {
+    const res = await client.callTool({
+      name: "load-skill",
+      arguments: { name: "local__design-mobile-apps" },
+    });
+    expect(res.isError).not.toBe(true);
+    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    expect(text).toContain("# Mobile design body");
+  });
+
+  it("keeps global skills loadable too", async () => {
+    const res = await client.callTool({ name: "load-skill", arguments: { name: "local__caveman" } });
+    expect(res.isError).not.toBe(true);
+    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    expect(text).toContain("# Caveman body");
+  });
+});

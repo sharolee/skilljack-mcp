@@ -27,6 +27,11 @@ import {
   isExcludedFilePath,
   type ResourceFilter,
 } from "./resource-filter.js";
+import {
+  buildDomainRouting,
+  renderDomainIndex,
+  type DomainRouting,
+} from "./domain-router.js";
 
 /**
  * Shared state for dynamic skill management.
@@ -154,7 +159,17 @@ export function getCatalogInstructions(
     "IMMEDIATELY as your first action. NEVER just announce or mention a skill " +
     "without actually loading it. This is a BLOCKING REQUIREMENT: load the skill " +
     "BEFORE generating any other response about the task.\n\n";
-  return intro + howToLoad + urgency + generateInstructions(modelInvocableSkills);
+  const routing = buildDomainRouting(modelInvocableSkills);
+  for (const warning of routing.warnings) {
+    console.error(`Domain routing: ${warning}`);
+  }
+  return (
+    intro +
+    howToLoad +
+    urgency +
+    generateInstructions(routing.globalSkills) +
+    renderDomainIndex(routing)
+  );
 }
 
 /**
@@ -236,7 +251,137 @@ export function registerSkillTool(
 
   const skillResource = registerSkillResourceTool(server, skillState);
 
+  // Fork: domain router. Registered separately from SkillTools on purpose —
+  // it is the discovery layer for clients WITHOUT the SEP-2640 skills
+  // extension (i.e. exactly the clients that keep load-skill enabled), so it
+  // must not be disabled by --tools=auto alongside the two skill tools.
+  registerRouteDomainTool(server, skillState);
+
   return { loadSkill: skillTool, skillResource };
+}
+
+/**
+ * Input schema for the fork's `route-domain` tool. `domain` is optional: with
+ * no argument the tool lists available domains; with a name it expands that
+ * domain into the same <available_skills> XML the main catalog uses.
+ */
+const RouteDomainSchema = z.object({
+  domain: z
+    .string()
+    .optional()
+    .describe("Domain name from <skill_domains>. Omit to list the available domains."),
+});
+
+const ROUTE_DOMAIN_USAGE =
+  "List skill domains or expand one domain into its skill entries. " +
+  "Call with no arguments to see the available domains and their descriptions. " +
+  "Call with a domain name to get that domain's <available_skills> entries " +
+  "(name, description, uri, location); then call `load-skill` with a chosen name. " +
+  "Use this when the user's task matches a domain shown in <skill_domains>: the " +
+  "domain's skills are intentionally kept out of the main catalog to save context.";
+
+/** XML-escape for tool-generated text (mirrors skill-discovery.escapeXml). */
+function escapeRouteXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+/**
+ * Register the fork's `route-domain` discovery tool.
+ *
+ * The handler re-runs buildDomainRouting on every call so it observes skill
+ * changes picked up by the file watcher, and derives eligible (model-invocable)
+ * skills from the live shared state. It never mutates skillState.
+ */
+function registerRouteDomainTool(server: McpServer, skillState: SkillState): void {
+  server.registerTool(
+    "route-domain",
+    {
+      title: "Route to Skill Domain",
+      description: ROUTE_DOMAIN_USAGE,
+      inputSchema: RouteDomainSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args): Promise<CallToolResult> => {
+      const { domain } = RouteDomainSchema.parse(args);
+      const allSkills = Array.from(skillState.skillMap.values());
+      const eligible = getModelInvocableSkills(allSkills);
+      const routing: DomainRouting = buildDomainRouting(eligible);
+
+      for (const warning of routing.warnings) {
+        console.error(`Domain routing: ${warning}`);
+      }
+
+      if (!routing.enabled) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Domain routing is not active on this server; all skills are global " +
+                "and already listed in <available_skills>.",
+            },
+          ],
+        };
+      }
+
+      // No argument: compact domain directory.
+      if (domain === undefined || domain.trim() === "") {
+        if (routing.domains.length === 0) {
+          return {
+            content: [{ type: "text", text: "No domains are configured." }],
+          };
+        }
+        const lines = ["<domains>"];
+        for (const d of routing.domains) {
+          lines.push("<domain>");
+          lines.push(`<name>${escapeRouteXml(d.name)}</name>`);
+          if (d.description) lines.push(`<description>${escapeRouteXml(d.description)}</description>`);
+          lines.push(`<skill_count>${d.skills.length}</skill_count>`);
+          if (d.triggers.length > 0) {
+            lines.push(`<triggers>${escapeRouteXml(d.triggers.join(", "))}</triggers>`);
+          }
+          lines.push("</domain>");
+        }
+        lines.push("</domains>");
+        lines.push(
+          "Call `route-domain` with a <name> above to load that domain's skill entries, " +
+            "then `load-skill` with a chosen skill name."
+        );
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
+      // Named domain: expand to catalog XML.
+      const match = routing.domains.find((d) => d.name.toLowerCase() === domain.trim().toLowerCase());
+      if (!match) {
+        const names = routing.domains.map((d) => d.name).join(", ") || "(none)";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Unknown domain "${domain}". Available domains: ${names}. Call route-domain with no arguments for details.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const header =
+        `Domain "${match.name}" has ${match.skills.length} skill(s). ` +
+        "Call `load-skill` with a name below to load its full SKILL.md.\n\n";
+      return {
+        content: [{ type: "text", text: header + generateInstructions(match.skills) }],
+      };
+    }
+  );
 }
 
 /** Whether the connected client declared the skills extension in its capabilities. */

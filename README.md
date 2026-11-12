@@ -73,32 +73,135 @@ runtime asset library (design kits, images, fonts, archives) otherwise bloat
 URIs, which pushes the skill catalog out of context and can breach the
 per-skill interop limits (512 files / 16 MB).
 
-By default, automatic listings omit:
+**The filter affects listings only.** `resources/read`,
+`resources/directory/read`, and `skill-resource <path>` still serve every
+eligible file on demand, so a skill's `assets/...` references keep working —
+the model pays for an asset only when a task actually needs it. A file hidden
+from the listing can still be loaded by name: skill instructions (`SKILL.md`,
+the `load-skill` result) carry the absolute `<location>` and explicit paths to
+scripts/styles, and an agent can also browse via `resources/directory/read`.
+
+### Two listing modes
+
+`--list-mode` (env `SKILLJACK_LIST_MODE`) picks how the filter decides what to
+include. Both modes are listing-only and share the "explicit reads still work"
+guarantee.
+
+**`blacklist` (default)** — list everything except excluded dirs and
+extensions. Suits libraries where most files are instructions. Omitted by
+default:
 
 - directories named `assets/` (at any depth), and
 - binary / design asset extensions (`.svg`, `.png`, `.jpg`, `.webp`, `.pdf`,
   `.zip`, fonts, media, compiled artefacts, …).
 
-Instruction and data files — `SKILL.md`, `references/*.md`, `scripts/*.mjs`,
-`.json`, `.csv`, `.py`, `.html`, `.css`, `.txt` — are always kept.
+**`whitelist`** — list only allowed extensions from non-ignored directories.
+Suits skills with many heterogeneous subdirectories (`scripts/`, `references/`,
+`styling/`, `data/`, `templates/`, …): it keeps every text / source / data
+format visible **regardless of directory name**, and hides binaries, unknown
+formats, and runtime/test artifacts. Allowed by default:
 
-**The filter affects listings only.** `resources/read`,
-`resources/directory/read`, and `skill-resource <path>` still serve every
-eligible file on demand, so a skill's `assets/...` references keep working —
-the model pays for an asset only when a task actually needs it.
+- extensions: `.md`, `.mdx`, `.txt`, `.rst`, `.adoc`, `.json`, `.jsonc`,
+  `.yaml`, `.yml`, `.toml`, `.csv`, `.tsv`, `.xml`, `.py`, `.js`, `.mjs`,
+  `.cjs`, `.ts`, `.mts`, `.cts`, `.jsx`, `.tsx`, `.sh`, `.bash`, `.zsh`,
+  `.ps1`, `.bat`, `.cmd`, `.html`, `.htm`, `.css`, `.scss`, `.sass`, `.less`,
+  `.sql`, `.graphql`;
+- ignored dirs (even if their files have allowed extensions): `assets`,
+  `tests`, `test`, `__tests__`, `__pycache__`, `fixtures`, `node_modules`,
+  `dist`, `build`, `out`, `target`, `coverage`, `.git`, `vendor`, `.venv`,
+  `venv`, `site-packages`.
+
+Files with no extension are hidden in whitelist mode (they cannot be
+identified as safe text). `SKILL.md` itself is never listed in either mode —
+it is delivered by `load-skill`.
 
 Configuration (CLI flag > environment variable > default):
 
 | CLI flag | Environment variable | Default |
 | --- | --- | --- |
 | `--resource-filter=off` | `SKILLJACK_RESOURCE_FILTER=off` | on |
-| `--exclude-dirs=assets,media` | `SKILLJACK_EXCLUDE_DIRS=assets,media` | `assets` |
-| `--exclude-extensions=.png,.svg` | `SKILLJACK_EXCLUDE_EXTENSIONS=.png,.svg` | 40+ binary types |
+| `--list-mode=whitelist` | `SKILLJACK_LIST_MODE=whitelist` | `blacklist` |
+| `--exclude-dirs=assets,media` | `SKILLJACK_EXCLUDE_DIRS=assets,media` | `assets` (blacklist) |
+| `--exclude-extensions=.png,.svg` | `SKILLJACK_EXCLUDE_EXTENSIONS=.png,.svg` | 56 binary types (blacklist) |
+| `--allow-extensions=.md,.py` | `SKILLJACK_ALLOW_EXTENSIONS=.md,.py` | text/source/data formats (whitelist) |
+| `--ignore-dirs=tests,assets` | `SKILLJACK_IGNORE_DIRS=tests,assets` | test/build/cache dirs (whitelist) |
 
 Use the `=<value>` form: a bare `--exclude-dirs assets` would make `assets`
-look like a skill directory. An empty value disables that dimension, so
-`SKILLJACK_EXCLUDE_DIRS=` keeps directories while still filtering extensions.
-The active policy is printed to stderr at startup.
+look like a skill directory. An empty value disables that dimension — e.g.
+`SKILLJACK_ALLOW_EXTENSIONS=` allows no files at all in whitelist mode, while
+`SKILLJACK_EXCLUDE_DIRS=` keeps every directory in blacklist mode. The active
+policy is printed to stderr at startup.
+
+## Fork: domain routing (on-demand skill discovery)
+
+A flat `<available_skills>` catalog lists every skill in the server
+`instructions` on every connection — roughly 574 B (~143 tokens) per skill. At
+100+ skills that is 14k+ tokens spent before any work begins, growing linearly
+with the library. This fork adds an **optional third discovery layer**: tag
+skills with a domain, and only untagged ("global") skills plus a compact domain
+index are put in the main catalog. The model expands one domain on demand via
+the `route-domain` tool.
+
+```
+Main catalog (instructions)   →  global skills + <skill_domains> index (names only)
+        │ model sees a task matching a domain
+        ▼
+route-domain("design")        →  that domain's <available_skills> entries
+        ▼
+load-skill("<name>")          →  full SKILL.md (unchanged)
+```
+
+**Routing is discovery-only.** It never removes a skill from the server's
+skill map: `load-skill`, `skill-resource`, `resources/list`, the SEP-2640
+`skills/list` / `skills/get` and `/skill` prompts still expose every skill. A
+model that already knows a name loads it directly; a skills-aware host sees the
+full list. Skills with **no domain are global** and appear in the main catalog
+exactly as upstream, so the feature is opt-in and backward compatible.
+
+### Domain map
+
+Domains are declared in a JSON file (see [`domains.json`](./domains.json)):
+
+```json
+{
+  "version": 1,
+  "domains": [
+    {
+      "name": "design",
+      "description": "UI/UX, visual design, design systems",
+      "triggers": ["design", "UI", "frontend"],
+      "antiTriggers": ["backend logic"],
+      "skills": ["design-mobile-apps", "design-taste-frontend"]
+    }
+  ]
+}
+```
+
+`skills[]` accepts either the frontmatter name or the qualified `prefix__name`.
+A skill can also tag itself in SKILL.md frontmatter with `domain: design` or
+`domains: [design, test]` — useful when a skill travels between repositories.
+Map entries take precedence; a skill listed in two domains goes to the first.
+Unknown skill names are warned on stderr and ignored, so a stale map can never
+hide a real skill.
+
+Configuration (CLI flag > environment variable > `./domains.json` in cwd):
+
+| CLI flag | Environment variable | Default |
+| --- | --- | --- |
+| `--domain-map=./domains.json` | `SKILLJACK_DOMAIN_MAP=./domains.json` | `./domains.json` if present |
+| `--domain-map=off` | `SKILLJACK_DOMAIN_MAP=off` | routing disabled → flat catalog |
+
+If the map is missing or invalid, routing **fails open**: every skill is listed
+globally and a warning is printed to stderr. Disable it at any time with
+`--domain-map=off` (flat upstream catalog) without removing any files. Use the
+`=<value>` form — a bare `--domain-map ./x.json` would make `./x.json` look
+like a skill directory. Domain routing applies to the default
+`--catalog=instructions` channel; the legacy `--catalog=tool-description` mode
+keeps its flat catalog.
+
+The active policy (domains, skill counts, global count, map path) is printed to
+stderr at startup, e.g. `domain routing: ON — 2 domain(s) [design=5, test=1],
+8 global skill(s); map: .../domains.json`.
 
 ## Configuration and Skills Display UI
 
@@ -117,6 +220,8 @@ For complete documentation, just ask your assistant:
 > "how do I use skilljack?" or "how does skilljack work behind the scenes?"
 
 This loads the [full reference](https://github.com/olaservo/skilljack-mcp/blob/main/skills/skilljack-docs/SKILL.md) including tools, prompts, resources, configuration options and environment variables, and architecture details.
+
+For maintaining skills and domains in this fork — adding skills, tagging domains, and understanding the on-demand routing contract — see [SKILLS-AND-DOMAINS.md](./SKILLS-AND-DOMAINS.md).
 
 ## Related
 

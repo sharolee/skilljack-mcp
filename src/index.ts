@@ -20,10 +20,19 @@
  *             tools/prompts listChanged notifications. Resource subscriptions
  *             remain fully dynamic.
  *   --resource-filter=off          List every supporting file (upstream behaviour).
- *   --exclude-dirs=a,b             Directory names to omit from listings (default: assets).
- *   --exclude-extensions=.png,.svg Extensions to omit from listings.
- *                                  Listing-only: explicit reads still work on demand.
- *                                  All three have SKILLJACK_* env-var equivalents.
+ *   --list-mode=whitelist|blacklist  How to decide what auto-listings include.
+ *                                  blacklist (default): everything except --exclude-dirs/extensions.
+ *                                  whitelist: only --allow-extensions from non-ignored dirs.
+ *   --exclude-dirs=a,b             Blacklist: dirs to omit (default: assets).
+ *   --exclude-extensions=.png,.svg Blacklist: extensions to omit.
+ *   --allow-extensions=.md,.py     Whitelist: extensions to list (default: text/source/data formats).
+ *   --ignore-dirs=tests,assets     Whitelist: dirs to hide even if files are text (default: tests/fixtures/build/...).
+ *                                  All of these have SKILLJACK_* env-var equivalents.
+ *                                  Listing-only: explicit reads always work on demand.
+ *   --domain-map=./domains.json    Domain routing: put only global skills + a compact domain
+ *                                  index in the main catalog; expand via the route-domain tool.
+ *                                  --domain-map=off disables it (flat catalog).
+ *                                  Env equivalent: SKILLJACK_DOMAIN_MAP.
  */
 
 import { McpServer, RegisteredTool } from "@modelcontextprotocol/server";
@@ -43,6 +52,7 @@ import {
   ToolsMode,
 } from "./skill-tool.js";
 import { describeResourceFilter } from "./resource-filter.js";
+import { buildDomainRouting, describeDomainRouting } from "./domain-router.js";
 import { pruneDigestCache } from "./skill-entries.js";
 import { createSkillsExtension, registerSkillResources } from "./skill-resources.js";
 import { registerSkillPrompts, registerUiPrompts, refreshPrompts, PromptRegistry } from "./skill-prompts.js";
@@ -854,6 +864,17 @@ async function main() {
   skillState.skillMap = createSkillMap(skills);
   console.error(`Discovered ${skills.length} skill(s)`);
   warnLargeSkillCount(skills.length);
+
+  // Fork: report the domain-routing policy so operators can see, from stderr,
+  // exactly which skills are global and which are hidden behind route-domain.
+  // Diagnostics only — does not mutate state.
+  const domainRouting = buildDomainRouting(
+    skills.filter((s) => s.effectiveAssistantInvocable)
+  );
+  for (const warning of domainRouting.warnings) {
+    console.error(`Domain routing: ${warning}`);
+  }
+  console.error(describeDomainRouting(domainRouting));
 
   // HTTP transport: serve the core skill surface over stateless HTTP and return.
   // Discovery-on-change works the same as stdio — file watchers and remote-source

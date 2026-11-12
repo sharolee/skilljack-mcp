@@ -60,13 +60,58 @@ export const DEFAULT_EXCLUDED_EXTENSIONS = [
   ".class", ".jar", ".pyc", ".pyo", ".node", ".wasm", ".pdb",
 ] as const;
 
+/**
+ * How the filter decides what stays in automatic listings.
+ * - "blacklist": list everything except excluded dirs/extensions (the original
+ *   fork behaviour). Good when a skill tree is mostly instructions.
+ * - "whitelist": list only files whose extension is allowed AND whose path is
+ *   not inside an ignored dir. Good for skills with many heterogeneous
+ *   subdirectories (scripts/, references/, styling/, data/, templates/...):
+ *   it keeps text/source/doc formats visible and hides design assets, test
+ *   fixtures, caches and any unknown format by default.
+ */
+export type ListMode = "blacklist" | "whitelist";
+
+/**
+ * Extensions kept by whitelist mode. These are the formats that carry skill
+ * instructions, runnable source, or reference data an agent may need to read.
+ * Everything else (images, fonts, media, archives, compiled/binary, unknown
+ * formats) is hidden from automatic listings unless explicitly allowed.
+ */
+export const DEFAULT_WHITELIST_EXTENSIONS = [
+  ".md", ".mdx", ".txt", ".rst", ".adoc",
+  ".json", ".jsonc", ".yaml", ".yml", ".toml", ".csv", ".tsv", ".xml",
+  ".py", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx",
+  ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
+  ".html", ".htm", ".css", ".scss", ".sass", ".less", ".sql", ".graphql",
+] as const;
+
+/**
+ * Directory names hidden in whitelist mode even when a descendant has an
+ * allowed extension. These are runtime/test/support artifacts that are never
+ * skill instructions: test suites, fixtures, dependency and build output,
+ * version control and caches. Kept separate from the blacklist's `dirs` so
+ * each mode stays independently configurable.
+ */
+export const DEFAULT_WHITELIST_IGNORED_DIRS = [
+  "assets", "tests", "test", "__tests__", "__pycache__", "fixtures",
+  "node_modules", "dist", "build", "out", "target", "coverage", ".git",
+  "vendor", ".venv", "venv", "site-packages",
+] as const;
+
 export interface ResourceFilter {
   /** false = list every file, exactly like upstream skilljack. */
   enabled: boolean;
-  /** Lower-cased directory names. */
+  /** How to decide inclusion. Defaults to "blacklist" (fork's original mode). */
+  mode: ListMode;
+  /** Lower-cased directory names excluded in blacklist mode. */
   dirs: ReadonlySet<string>;
-  /** Lower-cased extensions, always with a leading dot. */
+  /** Lower-cased extensions excluded in blacklist mode. */
   extensions: ReadonlySet<string>;
+  /** Lower-cased extensions allowed in whitelist mode. */
+  allowExtensions: ReadonlySet<string>;
+  /** Lower-cased directory names ignored in whitelist mode. */
+  ignoreDirs: ReadonlySet<string>;
 }
 
 function option(flag: string, envVar: string): string | undefined {
@@ -88,7 +133,7 @@ function normalizeExt(ext: string): string {
 /** Resolve the active filter from CLI flags, env vars, then defaults. */
 export function getResourceFilter(): ResourceFilter {
   const rawEnabled = option("--resource-filter", "SKILLJACK_RESOURCE_FILTER");
-  // Consistent with the other two knobs: an explicitly empty value disables
+  // Consistent with the other knobs: an explicitly empty value disables
   // filtering. An undefined value keeps the fork default (on).
   const enabled =
     rawEnabled === undefined
@@ -97,6 +142,9 @@ export function getResourceFilter(): ResourceFilter {
         ? false
         : !["off", "0", "false", "no", "none"].includes(rawEnabled.trim().toLowerCase());
 
+  const rawMode = option("--list-mode", "SKILLJACK_LIST_MODE");
+  const mode: ListMode = rawMode?.trim().toLowerCase() === "whitelist" ? "whitelist" : "blacklist";
+
   const dirs = new Set(parseList(option("--exclude-dirs", "SKILLJACK_EXCLUDE_DIRS"), DEFAULT_EXCLUDED_DIRS));
   const extensions = new Set(
     parseList(
@@ -104,19 +152,38 @@ export function getResourceFilter(): ResourceFilter {
       DEFAULT_EXCLUDED_EXTENSIONS
     ).map(normalizeExt)
   );
+  const allowExtensions = new Set(
+    parseList(
+      option("--allow-extensions", "SKILLJACK_ALLOW_EXTENSIONS"),
+      DEFAULT_WHITELIST_EXTENSIONS
+    ).map(normalizeExt)
+  );
+  const ignoreDirs = new Set(
+    parseList(
+      option("--ignore-dirs", "SKILLJACK_IGNORE_DIRS"),
+      DEFAULT_WHITELIST_IGNORED_DIRS
+    )
+  );
 
-  return { enabled, dirs, extensions };
+  return { enabled, mode, dirs, extensions, allowExtensions, ignoreDirs };
 }
 
 /** Whether a directory with this name should be skipped while listing. */
 export function isExcludedDirName(name: string, filter: ResourceFilter = getResourceFilter()): boolean {
-  return filter.enabled && filter.dirs.has(name.toLowerCase());
+  if (!filter.enabled) return false;
+  const lower = name.toLowerCase();
+  return filter.mode === "whitelist"
+    ? filter.ignoreDirs.has(lower)
+    : filter.dirs.has(lower);
 }
 
 /**
  * Whether a file should be skipped while listing, based on its extension.
  * Parent directories are handled separately by the recursive walk, so an
  * explicit read that starts inside `assets/` is never affected by this.
+ *
+ * In whitelist mode the polarity flips: only allowed extensions are listed.
+ * Files with no extension are dropped (they cannot be identified as safe text).
  */
 export function isExcludedFilePath(
   relativePath: string,
@@ -126,14 +193,25 @@ export function isExcludedFilePath(
   const normalized = relativePath.replace(/\\/g, "/");
   const leaf = normalized.slice(normalized.lastIndexOf("/") + 1);
   const ext = path.extname(leaf).toLowerCase();
+  if (filter.mode === "whitelist") {
+    return ext.length === 0 || !filter.allowExtensions.has(ext);
+  }
   return ext.length > 0 && filter.extensions.has(ext);
 }
 
 /** One-line summary for stderr at startup, so the active policy is observable. */
 export function describeResourceFilter(filter: ResourceFilter = getResourceFilter()): string {
   if (!filter.enabled) return "resource filter: OFF (all files listed)";
+  if (filter.mode === "whitelist") {
+    return (
+      `resource filter: WHITELIST — allowed extensions: ${filter.allowExtensions.size} ` +
+      `(${[...filter.allowExtensions].slice(0, 8).join(" ")} …); ` +
+      `ignored dirs: ${[...filter.ignoreDirs].slice(0, 8).join(", ")} … — ` +
+      `listings stay lean; explicit reads remain available`
+    );
+  }
   return (
-    `resource filter: ON — excluded dirs: ${[...filter.dirs].join(", ") || "(none)"}; ` +
+    `resource filter: BLACKLIST — excluded dirs: ${[...filter.dirs].join(", ") || "(none)"}; ` +
     `excluded extensions: ${filter.extensions.size} ` +
     `(e.g. ${[...filter.extensions].slice(0, 6).join(" ")}) — ` +
     `listings stay lean; explicit reads remain available`

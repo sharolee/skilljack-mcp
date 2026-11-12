@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "domains": [
+    {
+      "name": "design",
+      "description": "UI/UX、界面与视觉设计：页面与落地页构建、移动端 App 设计、组件与设计系统、排版配色、动效打磨、前端审美评审。用于设计、构建、重做、美化或评审网页与产品界面。",
+      "triggers": [
+        "设计", "UI", "UX", "界面", "前端", "页面", "落地页", "设计系统", "配色", "排版",
+        "美化", "style", "design", "frontend", "landing page", "UI polish"
+      ],
+      "antiTriggers": ["纯后端逻辑", "数据库查询", "命令行工具开发"],
+      "skills": [
+        "design-mobile-apps",
+        "design-taste-frontend",
+        "emil-design-eng",
+        "frontend-design",
+        "ui-ux-pro-max"
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Web 应用测试：用 Playwright 操作本地网页、验证前端功能、调试 UI 行为、截图与查看浏览器日志。",
+      "triggers": [
+        "测试", "test", "Playwright", "浏览器", "截图", "E2E", "UI 验证", "前端调试"
+      ],
+      "antiTriggers": ["编写单元测试代码", "CI 流水线配置"],
+      "skills": [
+        "webapp-testing"
+      ]
+    }
+  ]
+}
