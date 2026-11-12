@@ -35,3 +35,12 @@ evals/results/
 
 # Ignore any folder named .inbox at any depth
 .inbox/
+
+# Domain admin console: compiled JS/DTS (built by npm run build:admin)
+admin/*.js
+admin/*.d.ts
+admin/web/*.js
+admin/web/*.d.ts
+
+# Timestamped backups written by the admin console before saving domains.json
+*.bak-????????-?????????*

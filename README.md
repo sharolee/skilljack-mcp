@@ -1,8 +1,68 @@
-# Skilljack MCP
+# Skilljack MCP — large-library fork
+
+[English](./README.md) · [简体中文](./README-ZH.md)
 
 An MCP server that jacks [Agent Skills](https://agentskills.io) directly into your LLM's brain.
 
+> **This repository is a fork of [`olaservo/skilljack-mcp`](https://github.com/olaservo/skilljack-mcp) (v0.15.2, MIT).** Upstream behaviour is preserved. Three opt-in additions make it practical for libraries with 100+ skills: a **listing-only resource filter**, **domain-based on-demand catalog routing**, and a **local web console** for maintaining the domain map. All paths below are placeholders such as `<SKILLS_DIR>` and `<REPO_ROOT>` — nothing in this document is tied to a particular machine, client, or skill set.
+
 > **Tool search / deferred tools.** By default, skilljack delivers its skill catalog via MCP **server instructions**, which arrive in the `initialize` handshake and are visible to the model even when **tool search / deferred tool loading** is enabled (the default on modern Claude Code) — so automatic skill activation works out of the box. The legacy `--catalog=tool-description` mode (not recommended — see [Catalog channel](#usage) below) delivers the catalog through the `load-skill` tool description instead, but tool-search clients defer tool descriptions out of context, so that mode needs `ENABLE_TOOL_SEARCH=false` to auto-activate.
+
+## About this fork
+
+Upstream skilljack is excellent for a modest skill library, but two things grow linearly (or worse) with its size:
+
+| Problem | Where it shows up | Fork addition |
+| --- | --- | --- |
+| A skill that ships thousands of design assets / binaries floods `resources/list` and the SEP-2640 `skills/list` manifests, and can breach the per-skill 512-file / 16 MiB interop limits. | Context is spent before any work starts | [Listing-only resource filter](#fork-listing-only-resource-filter): hide heavy files from **automatic listings** only; explicit reads still work |
+| The flat `<available_skills>` catalog puts every skill in `instructions` on every connection (~574 B ≈ 143 tokens each, so 100+ skills cost 14k+ tokens up front). | Every connection, even for unrelated tasks | [Domain routing](#fork-domain-routing-on-demand-skill-discovery): main catalog lists global skills + a compact domain index; the model expands one domain on demand |
+| Tagging 100+ skills by hand-editing JSON is error-prone and hard to review. | Maintenance | [Domain admin console](#fork-domain-admin-console-web-ui): search, batch assign, validate, preview catalog cost, back up |
+
+The resulting disclosure chain has four steps — the model pays for each layer only when it needs it:
+
+```
+initialize instructions      →  global skills + compact <skill_domains> index (names only)
+route-domain("<domain>")     →  that domain's <available_skills> entries
+load-skill("<name>")         →  the full SKILL.md (upstream behaviour, unchanged)
+resources/read, skill-resource <path>  →  one supporting file: script, style, asset
+```
+
+**Compatibility:** both server-side additions are reversible. The filter is on by default but `--resource-filter=off` restores upstream listing behaviour; routing activates only when a `domains.json` is configured and `--domain-map=off` returns to a flat catalog. Without a map, the catalog is byte-for-byte upstream's.
+
+### Quick start (fork)
+
+```bash
+cd <REPO_ROOT>
+npm install
+npm run build
+
+# Recommended for a large, heterogeneous skill library:
+node dist/index.js \
+  --list-mode=whitelist \
+  --domain-map=<REPO_ROOT>/domains.json \
+  <SKILLS_DIR>
+```
+
+A typical stdio MCP client entry (replace the placeholders):
+
+```json
+{
+  "mcpServers": {
+    "skilljack": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "<REPO_ROOT>/dist/index.js",
+        "--list-mode=whitelist",
+        "--domain-map=<REPO_ROOT>/domains.json",
+        "<SKILLS_DIR>"
+      ]
+    }
+  }
+}
+```
+
+Use the `=<value>` form for every fork flag — a bare `--domain-map ./x.json` would make `./x.json` look like a skill directory. If a configuration manager distributes MCP entries to several clients, change the entry through that manager so a later sync does not overwrite it.
 
 ## Installation
 
@@ -171,7 +231,7 @@ Domains are declared in a JSON file (see [`domains.json`](./domains.json)):
       "description": "UI/UX, visual design, design systems",
       "triggers": ["design", "UI", "frontend"],
       "antiTriggers": ["backend logic"],
-      "skills": ["design-mobile-apps", "design-taste-frontend"]
+      "skills": ["mobile-ui-kit", "design-system-kit"]
     }
   ]
 }
@@ -200,8 +260,110 @@ like a skill directory. Domain routing applies to the default
 keeps its flat catalog.
 
 The active policy (domains, skill counts, global count, map path) is printed to
-stderr at startup, e.g. `domain routing: ON — 2 domain(s) [design=5, test=1],
-8 global skill(s); map: .../domains.json`.
+stderr at startup, e.g. `domain routing: ON — 2 domain(s) [design=3, test=1],
+N global skill(s); map: <path-to-domains.json>`.
+
+### The `route-domain` tool
+
+| Call | Returns |
+| --- | --- |
+| `route-domain()` | `<domains>` directory: name, description, skill count and triggers for every domain |
+| `route-domain({ "domain": "design" })` | That domain's `<available_skills>` entries (name / description / uri / location); then `load-skill` a chosen name |
+| `route-domain({ "domain": "nope" })` | An error listing the valid domain names |
+
+Domain names are matched case-insensitively. The tool is read-only, idempotent, and registered **independently of `--tools`** (it is the discovery layer for clients *without* the skills extension, so `--tools=auto` must not disable it). Each call re-evaluates the live skill state, so skills added by the file watcher are visible without a restart. When routing is disabled the tool still exists and answers that all skills are global. Routing applies only to the default `--catalog=instructions` channel.
+
+## Fork: domain admin console (web UI)
+
+`npm run domains-ui` starts a **standalone local web console** for browsing the
+skill library and maintaining `domains.json` in bulk. It is TypeScript on both
+ends (a Node `http` server plus a plain-DOM front end), adds no dependencies,
+runs as a separate process from the MCP server, and binds `127.0.0.1` only.
+
+```bash
+npm run domains-ui
+# or with explicit paths:
+npm run domains-ui -- --skills-dir=<path-to-skills> --domain-map=<path-to-domains.json> --port=5178
+```
+
+Open `http://127.0.0.1:5178`. Path resolution order: CLI flags > `SKILLS_DIR` /
+`SKILLJACK_DOMAIN_MAP` / `SKILLJACK_ADMIN_PORT` / `SKILLJACK_ADMIN_HOST` >
+`~/.skilljack/config.json` > `./domains.json` in the repo root. Paths can also
+be changed at runtime from the in-app Settings dialog (in-memory only; nothing
+is written to a config file). The build step (`npm run build:admin`) runs
+automatically on startup and is also available on its own.
+
+What it does:
+
+- **Browse / search** every discovered skill — name, description, frontmatter,
+  full `SKILL.md`, resource counts and absolute paths. Symlinks, missing
+  `SKILL.md` and invalid frontmatter appear as flagged rows instead of silently
+  disappearing.
+- **Batch assign** — multi-select skills, then move them into a domain, into a
+  new domain, or back to global. Assignment is a *move*: the skill is removed
+  from its previous domain, matching the server's one-skill-one-domain rule.
+- **Edit domains** — add/delete, edit `name`, `description`, `triggers`,
+  `antiTriggers`, and remove individual members.
+- **Preview cost** — live estimate of main-catalog bytes/tokens and the saving
+  versus a flat catalog, reflecting unsaved edits.
+- **Surface the frontmatter trap** — if a skill still declares `domain` in its
+  SKILL.md, removing it from the map does not make it global. The UI flags that
+  explicitly instead of letting you assume the move worked.
+
+Writes are safe: `PUT /api/domains` validates first (rejecting duplicate domain
+names, non-array `skills`, and multi-domain membership), then writes atomically
+(`tmp` + `rename`) after creating a timestamped backup. The 5 most recent
+backups are kept. Unknown skill names are warnings, not errors, so a portable
+map may reference skills that are not installed on this machine. The skills
+library itself is never written to.
+
+The console scans the configured skills directory only. Bundled skills shipped
+with the server live elsewhere and therefore do not appear in its list. See
+[SKILLS-AND-DOMAINS.md](./SKILLS-AND-DOMAINS.md) for the underlying rules.
+
+## Fork: configuration & development
+
+All fork flags use the `--flag=<value>` form; CLI > environment variable > built-in default. An explicitly empty value disables that dimension (e.g. `SKILLJACK_EXCLUDE_DIRS=` keeps every directory in blacklist mode). The active filter and routing policies are printed to stderr at startup.
+
+| Flag | Environment variable | Default | Purpose |
+| --- | --- | --- | --- |
+| `--resource-filter=off` | `SKILLJACK_RESOURCE_FILTER` | on | Restore upstream listing behaviour |
+| `--list-mode=blacklist\|whitelist` | `SKILLJACK_LIST_MODE` | `blacklist` | How automatic listings decide inclusion |
+| `--exclude-dirs=…` | `SKILLJACK_EXCLUDE_DIRS` | `assets` | Blacklist: directory names to hide |
+| `--exclude-extensions=…` | `SKILLJACK_EXCLUDE_EXTENSIONS` | 56 binary types | Blacklist: extensions to hide |
+| `--allow-extensions=…` | `SKILLJACK_ALLOW_EXTENSIONS` | text / source / data formats | Whitelist: extensions to list |
+| `--ignore-dirs=…` | `SKILLJACK_IGNORE_DIRS` | test / build / cache dirs | Whitelist: directories to skip |
+| `--domain-map=<path>\|off` | `SKILLJACK_DOMAIN_MAP` | `./domains.json` if present | Domain routing on / off |
+
+Upstream options (`--static`, `--http`, `--tools`, `--catalog`, `SKILLS_DIR`, …) are unchanged; the maintainer guide has a [complete configuration reference](./SKILLS-AND-DOMAINS.md).
+
+### Repository layout (fork additions)
+
+| Path | Role |
+| --- | --- |
+| `src/resource-filter.ts` | Filter policy, defaults, blacklist / whitelist predicates, startup description |
+| `src/skill-tool.ts` | Applies the filter in `listSkillFiles()` only; splits the main catalog; defines `route-domain` |
+| `src/domain-router.ts` | Reads `domains.json`, frontmatter fallback, name matching, warnings, fail-open |
+| `src/index.ts` | CLI flag documentation and stderr startup summary for both policies |
+| `domains.json` | Portable domain map (edit it, or copy it to your own path) |
+| `admin/core.ts` | Skill scanning, domain-map validation, atomic writes, backups, catalog-cost estimate |
+| `admin/server.ts`, `admin/web/*` | Standalone TypeScript HTTP server + dependency-free DOM front end |
+| `src/*.test.ts`, `admin/core.test.ts` | Vitest suites for filters, routing, catalog, tool calls and admin writes |
+| `SKILLS-AND-DOMAINS.md` | Maintainer guide: adding skills, tagging domains, verifying, troubleshooting (Chinese) |
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm run build` | Build MCP Apps UI bundles and compile the server to `dist/` |
+| `npm run build:admin` | Compile the admin console TypeScript |
+| `npm run typecheck` | Type-check the server and the MCP Apps UI |
+| `npm test` / `npm run test:watch` | Run the Vitest suite once / in watch mode |
+| `npm run domains-ui` | Build and start the domain admin console |
+| `npm run dev` | `tsx watch src/index.ts` |
+| `npm run inspector` | Launch MCP Inspector against `dist/index.js` |
+
+The tests lock down the invariants that make this fork safe to deploy: **listing-only** (a hidden asset is still readable by URI and executable from its disk path), **discovery-only** (routing never removes a skill from the skill map, `load-skill` / `resources/list` / `skills/list` still see everything), **fail-open** (missing or invalid map degrades to a flat catalog), **one skill → one domain** with unknown names warned not hidden, **stdio purity** (stdout carries JSON-RPC only, even with `env: {}`), and **safe admin writes** (validate → timestamped backup → atomic rename; the skill library is never written to).
 
 ## Configuration and Skills Display UI
 
@@ -215,13 +377,18 @@ This server comes along with a [MCP Apps](https://blog.modelcontextprotocol.io/p
 
 ## Documentation
 
-For complete documentation, just ask your assistant:
+| Document | Language | Contents |
+| --- | --- | --- |
+| [README.md](./README.md) | English | This file: installation, usage, fork features, configuration and development |
+| [README-ZH.md](./README-ZH.md) | 简体中文 | The Chinese counterpart of this README |
+| [SKILLS-AND-DOMAINS.md](./SKILLS-AND-DOMAINS.md) | 简体中文 | Maintainer guide: adding skills, tagging and maintaining domains, the routing contract, visibility rules, verification and troubleshooting |
+| [Upstream full reference](https://github.com/olaservo/skilljack-mcp/blob/main/skills/skilljack-docs/SKILL.md) | English | Tools, prompts, resources, configuration, architecture — loaded on demand by the bundled `skilljack-docs` skill |
+
+For the upstream reference, just ask your assistant:
 
 > "how do I use skilljack?" or "how does skilljack work behind the scenes?"
 
-This loads the [full reference](https://github.com/olaservo/skilljack-mcp/blob/main/skills/skilljack-docs/SKILL.md) including tools, prompts, resources, configuration options and environment variables, and architecture details.
-
-For maintaining skills and domains in this fork — adding skills, tagging domains, and understanding the on-demand routing contract — see [SKILLS-AND-DOMAINS.md](./SKILLS-AND-DOMAINS.md).
+The server loads the bundled documentation skill on demand. For anything about **adding skills or maintaining domains in this fork**, start with `SKILLS-AND-DOMAINS.md` — it is intentionally environment-independent, so it can travel with the repository.
 
 ## Related
 
@@ -229,3 +396,7 @@ For maintaining skills and domains in this fork — adding skills, tagging domai
 - [Skills Over MCP Interest Group repository](https://github.com/modelcontextprotocol/experimental-ext-skills)
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
 - [Example MCP Clients](https://modelcontextprotocol.io/clients)
+
+## Upstream & License
+
+Based on [`olaservo/skilljack-mcp`](https://github.com/olaservo/skilljack-mcp) v0.15.2 by Ola Hungerford. Upstream is MIT-licensed; this fork keeps the same [LICENSE](./LICENSE). The fork additions (listing-only filter, domain routing, admin console) live in `src/`, `admin/` and `domains.json` and are designed to be toggled off individually, so the server can always fall back to upstream behaviour.

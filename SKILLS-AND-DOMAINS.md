@@ -326,3 +326,27 @@ domain routing: ON — 2 domain(s) [design=4, test=2], 11 global skill(s); map: 
 - 领域索引的 token 成本是 **O(领域数)**，不是 O(技能数)——这是它能扩展到 100+ 技能的关键。
 - `triggers` / `antiTriggers` 只是给模型的提示，**没有服务端自动路由**。
 - stdio 下 `instructions` 启动时冻结；改配置后**重启客户端**才能看到一致的主 catalog。
+
+---
+
+## 附：Web 控制台（可视化维护）
+
+手改 `domains.json` 容易出错，仓库附一个独立的本地 Web 控制台，覆盖本文 §4–§6 的全部日常操作：
+
+```bash
+npm run domains-ui
+# 或显式指定路径：
+npm run domains-ui -- --skills-dir=<SKILLS_DIR> --domain-map=<REPO_ROOT>/domains.json --port=5178
+```
+
+启动后打开 `http://127.0.0.1:5178`。路径也可在界面的「路径设置」里临时切换（仅内存生效，不写配置文件）。
+
+- **查看 / 搜索**：技能表实时过滤名称、描述、路径、领域；点「详情」看 frontmatter、SKILL.md 全文、资源统计。符号链接、缺 `SKILL.md`、frontmatter 不合法的技能会标红提示，不会被悄悄忽略。
+- **批量配置领域**：多选技能 → 一键移入某领域 / 新建领域 / 移回全局。分配是「移动」语义，自动从原领域移除，符合服务端一技能只归一域的规则。
+- **领域维护**：增删改领域，编辑 `description` / `triggers` / `antiTriggers`，移除单个成员。
+- **成本预览**：实时估算主 catalog 的字节数 / tokens 及相对全平铺的节省比例，包含未保存改动。
+- **frontmatter 陷阱提示**：技能若仍在 SKILL.md 里写了 `domain`，仅从映射移除并不会让它变全局，界面会明确标注来源。
+
+写入前做结构校验（域名重复、`skills` 非数组、同一技能跨多域一律拒绝），然后**原子写**并自动留时间戳备份（保留最近 5 份）；未安装的技能名只报警告不阻断，便于维护跨机器通用的映射。服务默认只监听 `127.0.0.1`，且**只写领域映射文件，不改技能库**。
+
+注意：界面扫描的是你配置的技能库目录，服务端自带的 bundled 技能不在其中；保存映射后，运行中的 MCP 客户端仍需**重启 / 重连**才能看到新 catalog（stdio 下 `instructions` 启动时冻结）。

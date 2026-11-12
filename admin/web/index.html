@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>技能与领域控制台 · Skilljack</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">SJ</div>
+      <div class="brand-text">
+        <h1>技能与领域控制台</h1>
+        <p>Skilljack · 领域路由维护</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="btnSettings" class="btn btn-ghost" title="配置技能库与映射路径">路径设置</button>
+      <button id="btnReset" class="btn btn-ghost" disabled>重置</button>
+      <button id="btnSave" class="btn btn-primary" disabled>保存更改</button>
+    </div>
+  </header>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <main>
+    <section class="stats" id="stats"></section>
+
+    <div class="layout">
+      <section class="panel skills-panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <h2>技能库</h2>
+            <span class="count" id="skillCount"></span>
+          </div>
+          <div class="filters">
+            <input id="search" type="search" placeholder="搜索名称、描述、路径、领域…" autocomplete="off" spellcheck="false">
+            <select id="filterDomain" aria-label="按领域筛选"></select>
+            <button id="btnInvert" class="btn btn-ghost btn-sm" title="反选当前可见技能">反选</button>
+          </div>
+        </div>
+
+        <div class="bulkbar" id="bulkbar" hidden>
+          <span>已选 <strong id="selectedCount">0</strong> 个技能</span>
+          <select id="bulkTarget" aria-label="目标领域"></select>
+          <button id="btnApply" class="btn btn-sm btn-primary">应用</button>
+          <button id="btnClearSel" class="btn btn-sm btn-ghost">清空选择</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" id="selectAll" aria-label="全选"></th>
+                <th>技能</th>
+                <th>描述</th>
+                <th>领域</th>
+                <th class="col-num">文件</th>
+                <th class="col-act"></th>
+              </tr>
+            </thead>
+            <tbody id="skillRows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="emptyState" hidden></div>
+      </section>
+
+      <aside class="panel domains-panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <h2>领域</h2>
+            <span class="count" id="domainCount"></span>
+          </div>
+          <button id="btnAddDomain" class="btn btn-sm btn-primary">+ 新建领域</button>
+        </div>
+        <p class="hint">未分配到任何领域的技能为<strong>全局技能</strong>，按现状全量加载。一个技能只能属于一个领域，分配时会自动从原领域移除。</p>
+        <div id="domainList" class="domain-list"></div>
+      </aside>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="detailModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="modal-head">
+        <h3 id="detailTitle">技能详情</h3>
+        <button class="icon-btn" data-close="detailModal" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body" id="detailBody"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head">
+        <h3 id="settingsTitle">路径设置</h3>
+        <button class="icon-btn" data-close="settingsModal" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">路径只作用于本次运行，不会写入任何配置文件。也可用启动参数 <code>--skills-dir=</code>、<code>--domain-map=</code> 指定。</p>
+        <label class="field">
+          <span>技能库根目录</span>
+          <input id="cfgSkillsDir" type="text" spellcheck="false" placeholder="包含若干技能子目录的绝对路径">
+        </label>
+        <label class="field">
+          <span>领域映射文件 domains.json</span>
+          <input id="cfgMapPath" type="text" spellcheck="false" placeholder="domains.json 的绝对路径">
+        </label>
+        <div class="modal-actions">
+          <button id="btnCancelSettings" class="btn btn-ghost">取消</button>
+          <button id="btnApplySettings" class="btn btn-primary">应用并刷新</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

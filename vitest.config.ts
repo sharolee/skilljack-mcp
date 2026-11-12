@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "admin/**/*.test.ts"],
     // Upstream tests exercise the unfiltered contract. The fork enables the
     // resource filter by default; the new resource-filter.test.ts opts in
     // explicitly so both behaviours stay covered.

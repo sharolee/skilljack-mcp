@@ -16,6 +16,8 @@
     "dist/ui",
     "skills",
     "README.md",
+    "README-ZH.md",
+    "SKILLS-AND-DOMAINS.md",
     "LICENSE"
   ],
   "author": "Ola Hungerford",
@@ -45,6 +47,8 @@
     "typecheck:ui": "tsc -p tsconfig.ui.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "domains-ui": "npm run build:admin && tsx admin/server.ts",
+    "build:admin": "tsc -p admin/tsconfig.json",
     "inspector": "npx @modelcontextprotocol/inspector@latest node dist/index.js",
     "eval": "tsx evals/eval.ts",
     "eval:greeting": "tsx evals/eval.ts --task=greeting",
