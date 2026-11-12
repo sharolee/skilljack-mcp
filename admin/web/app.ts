@@ -204,18 +204,27 @@ function previewStats(): { global: number; flat: number; routed: number; saved: 
 function renderStats(): void {
   if (!state) return;
   const p = previewStats();
-  const cards = [
-    { label: "技能总数", value: `${state.stats.valid}`, sub: `${state.stats.total} 个目录${state.stats.linked ? ` · ${state.stats.linked} 个链接被跳过` : ""}` },
-    { label: "全局技能", value: `${p.global}`, sub: dirty ? "预览（未保存）" : "主 catalog 全量列出" },
-    { label: "领域", value: `${draft.length}`, sub: `共 ${eligibleSkills().length - p.global} 个技能按需加载` },
-    { label: "主 catalog 估算", value: formatBytes(p.routed), sub: `约 ${Math.round(p.routed / 4)} tokens${dirty ? " · 预览" : ""}` },
-    { label: "对比全平铺节省", value: `${p.saved}%`, sub: `全平铺 ${formatBytes(p.flat)} → 当前 ${formatBytes(p.routed)}` },
+  const eligible = eligibleSkills().length;
+  const assigned = eligible - p.global;
+  // The hero KPI's underline shows how much of the library is behind a domain.
+  const coverage = eligible > 0 ? Math.round((assigned / eligible) * 100) : 0;
+  const cards: { label: string; value: string; sub: string; tone: string; tip?: string }[] = [
+    {
+      label: "技能总数", value: `${state.stats.valid}`,
+      sub: `${state.stats.total} 个目录${state.stats.linked ? ` · ${state.stats.linked} 个链接被跳过` : ""}`,
+      tone: "hero", tip: `已归入领域 ${assigned} / ${eligible} 个技能（${coverage}%）`,
+    },
+    { label: "全局技能", value: `${p.global}`, sub: dirty ? "预览（未保存）" : "主 catalog 全量列出", tone: "normal" },
+    { label: "领域", value: `${draft.length}`, sub: `${assigned} 个技能按需加载`, tone: "normal" },
+    { label: "主 catalog 估算", value: formatBytes(p.routed), sub: `约 ${Math.round(p.routed / 4)} tokens${dirty ? " · 预览" : ""}`, tone: "accent" },
+    { label: "对比全平铺节省", value: `${p.saved}%`, sub: `${formatBytes(p.flat)} → ${formatBytes(p.routed)}`, tone: "success" },
   ];
-  el("stats").innerHTML = cards.map((c) => `
-    <div class="stat-card">
-      <div class="stat-label">${esc(c.label)}</div>
-      <div class="stat-value">${esc(c.value)}</div>
-      <div class="stat-sub">${esc(c.sub)}</div>
+  el("stats").innerHTML = cards.map((c, i) => `
+    <div class="kpi" data-tone="${esc(c.tone)}" title="${esc(`${c.label}：${c.value} · ${c.sub}${c.tip ? ` · ${c.tip}` : ""}`)}">
+      <div class="kpi-label">${esc(c.label)}</div>
+      <div class="kpi-value">${esc(c.value)}</div>
+      <div class="kpi-sub">${esc(c.sub)}</div>
+      ${i === 0 ? `<div class="kpi-track"><div class="kpi-fill" style="width:${coverage}%"></div></div>` : ""}
     </div>
   `).join("");
 }
@@ -351,9 +360,11 @@ function renderBulkbar(): void {
 }
 
 function updateButtons(): void {
-  el<HTMLButtonElement>("btnSave").disabled = !dirty;
+  const save = el<HTMLButtonElement>("btnSave");
+  save.disabled = !dirty;
+  save.classList.toggle("is-dirty", dirty);
   el<HTMLButtonElement>("btnReset").disabled = !dirty;
-  el<HTMLButtonElement>("btnSave").textContent = dirty ? "保存更改 •" : "保存更改";
+  save.textContent = dirty ? "保存更改 •" : "保存更改";
 }
 
 function renderAll(): void {
@@ -654,6 +665,21 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
+
+// ---------------------------------------------------------------------------
+// Theme — dark by default (matches the compact dashboard style); the toggle
+// persists the choice in localStorage. The <head> inline script applies it
+// before first paint, so there is no light flash on reload.
+// ---------------------------------------------------------------------------
+
+const THEME_KEY = "skilljack-admin-theme";
+function applyTheme(theme: "dark" | "light"): void {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem(THEME_KEY, theme); } catch { /* private mode */ }
+}
+el("btnTheme").addEventListener("click", () => {
+  applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+});
 
 // ---------------------------------------------------------------------------
 // Boot

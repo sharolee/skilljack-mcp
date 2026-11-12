@@ -295,6 +295,7 @@ automatically on startup and is also available on its own.
 
 What it does:
 
+- **Compact dashboard layout** — five KPIs live in the sticky top bar instead of a separate card row; the hero KPI carries a domain-coverage bar, key figures are colour-accented, and both panels share a row height with internal scrolling. A top-bar toggle switches between the default dark theme and a light theme (persisted in `localStorage`).
 - **Browse / search** every discovered skill — name, description, frontmatter,
   full `SKILL.md`, resource counts and absolute paths. Symlinks, missing
   `SKILL.md` and invalid frontmatter appear as flagged rows instead of silently
