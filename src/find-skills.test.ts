@@ -108,6 +108,16 @@ describe("find-skills-for-task tool", () => {
     expect(names).not.toContain("route-domain");
   });
 
+  it("exposes the domain directory in the tool description", async () => {
+    const tool = (await client.listTools()).tools.find((t) => t.name === "find-skills-for-task");
+    expect(tool?.description).toContain("<skill_domains>");
+    expect(tool?.description).toContain("- design: UI/UX design");
+    expect(tool?.description).toContain("- test: Webapp testing");
+    // Trigger words stay server-side; only names + one-line descriptions are advertised.
+    expect(tool?.description).not.toContain("<triggers>");
+    expect(tool?.description).toContain("Call with `task`");
+  });
+
   it("lists domains with no arguments (backward-compatible path)", async () => {
     const text = textOf(await client.callTool({ name: "find-skills-for-task", arguments: {} }));
     expect(text).toContain("<domains>");

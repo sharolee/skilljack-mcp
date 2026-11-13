@@ -39,11 +39,15 @@ interface Skill {
 interface State {
   skillsDir: string;
   mapPath: string;
+  /** Where the Paths dialog persists configuration (fork). */
+  configStorePath?: string;
+  /** Which source currently wins for the skills directory. */
+  configSource?: "cli" | "env" | "config" | "none";
   skills: Skill[];
   version: number;
   domains: DomainDef[];
   stats: {
-    total: number; valid: number; linked: number; eligible: number; global: number;
+    total: number; valid: number; linked: number; eligible: number; global: number; userCommand: number;
     domainCount: number; byDomain: Record<string, number>;
     flatCatalogBytes: number; routedCatalogBytes: number; savedPercent: number;
   };
@@ -153,6 +157,18 @@ function effectiveDomain(skill: Skill): string | null {
   return null;
 }
 
+/**
+ * Top-level classification used by the table and filters. Three routing
+ * categories — 用户命令 (slash-only, user-triggered only), 领域 (routed), 全局
+ * (always listed) — plus an "issue" bucket for invalid / link entries that the
+ * server skips. User-command skills are read-only for domain assignment.
+ */
+function skillCategory(skill: Skill): "user-command" | "domain" | "global" | "issue" {
+  if (!skill.valid || skill.isLink) return "issue";
+  if (!skill.modelInvocable) return "user-command";
+  return effectiveDomain(skill) === null ? "global" : "domain";
+}
+
 function eligibleSkills(): Skill[] {
   return state ? state.skills.filter((s) => s.valid && s.modelInvocable && !s.isLink) : [];
 }
@@ -216,6 +232,11 @@ function renderStats(): void {
     },
     { label: "全局技能", value: `${p.global}`, sub: dirty ? "预览（未保存）" : "主 catalog 全量列出", tone: "normal" },
     { label: "领域", value: `${draft.length}`, sub: `${assigned} 个技能按需加载`, tone: "normal" },
+    {
+      label: "用户命令", value: `${state.stats.userCommand}`,
+      sub: "仅 /命令 触发 · 不参与路由", tone: "muted",
+      tip: "标记为 disable-model-invocation：只能由用户手动调用，模型不自动发现，也不能分配到领域",
+    },
     { label: "主 catalog 估算", value: formatBytes(p.routed), sub: `约 ${Math.round(p.routed / 4)} tokens${dirty ? " · 预览" : ""}`, tone: "accent" },
     { label: "对比全平铺节省", value: `${p.saved}%`, sub: `${formatBytes(p.flat)} → ${formatBytes(p.routed)}`, tone: "success" },
   ];
@@ -234,6 +255,7 @@ function renderFilters(): void {
   const options = [
     `<option value="__all__">全部状态</option>`,
     `<option value="__global__">仅全局技能</option>`,
+    `<option value="__usercmd__">仅用户命令（/命令）</option>`,
     `<option value="__issues__">仅异常 / 链接</option>`,
     ...draft.map((d) => `<option value="d:${esc(d.name)}">领域：${esc(d.name)}</option>`),
   ];
@@ -254,7 +276,8 @@ function visibleSkills(): Skill[] {
       ].join(" ").toLowerCase();
       if (!haystack.includes(q)) return false;
     }
-    if (filterValue === "__global__" && domain !== null) return false;
+    if (filterValue === "__global__" && skillCategory(s) !== "global") return false;
+    if (filterValue === "__usercmd__" && skillCategory(s) !== "user-command") return false;
     if (filterValue === "__issues__" && s.valid && !s.isLink) return false;
     if (filterValue.startsWith("d:") && domain !== filterValue.slice(2)) return false;
     return true;
@@ -264,7 +287,6 @@ function visibleSkills(): Skill[] {
 function statusBadge(skill: Skill): string {
   if (skill.isLink) return `<span class="tag tag-danger">链接跳过</span>`;
   if (!skill.valid) return `<span class="tag tag-danger">无效</span>`;
-  if (!skill.modelInvocable) return `<span class="tag tag-muted">不进 catalog</span>`;
   return "";
 }
 
@@ -284,8 +306,11 @@ function renderRows(): void {
   el("skillCount").textContent = `${rows.length} / ${state.skills.length}`;
 
   el("skillRows").innerHTML = rows.map((s) => {
-    const assignable = s.valid && !s.isLink;
+    const assignable = s.valid && !s.isLink && s.modelInvocable;
     const checked = selected.has(s.dirName) && assignable;
+    const domainCell = s.modelInvocable
+      ? domainBadge(s)
+      : `<span class="tag tag-usercmd" title="仅用户手动触发（/命令）：模型不自动调用，也不参与领域路由，此类技能不能分配到领域">用户命令</span>`;
     return `
       <tr data-id="${esc(s.dirName)}" class="${s.valid ? "" : "row-invalid"}">
         <td class="col-check">
@@ -297,7 +322,7 @@ function renderRows(): void {
           ${s.issue ? `<div class="skill-issue">${esc(s.issue)}</div>` : ""}
         </td>
         <td class="col-desc"><span title="${esc(s.description)}">${esc(truncate(s.description || "—", 110))}</span></td>
-        <td class="col-domain">${assignable ? domainBadge(s) : `<span class="tag tag-plain">—</span>`}</td>
+        <td class="col-domain">${domainCell}</td>
         <td class="col-num">${s.valid ? esc(s.fileCount) : "—"}</td>
         <td class="col-act"><button class="btn btn-sm btn-ghost btn-detail" data-id="${esc(s.dirName)}">详情</button></td>
       </tr>
@@ -310,7 +335,7 @@ function renderRows(): void {
     : "没有匹配的技能，换个关键词或筛选条件试试。";
 
   const all = el<HTMLInputElement>("selectAll");
-  const assignableVisible = rows.filter((s) => s.valid && !s.isLink);
+  const assignableVisible = rows.filter((s) => s.valid && !s.isLink && s.modelInvocable);
   all.checked = assignableVisible.length > 0 && assignableVisible.every((s) => selected.has(s.dirName));
   all.disabled = assignableVisible.length === 0;
 }
@@ -411,7 +436,7 @@ function applyBulk(target: string): void {
     if (domain) {
       for (const id of selected) {
         const s = state.skills.find((x) => x.dirName === id);
-        if (s && s.valid) domain.skills.push(s.name);
+        if (s && s.valid && s.modelInvocable) domain.skills.push(s.name);
       }
     }
   }
@@ -485,14 +510,18 @@ async function applySettings(): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ skillsDir, mapPath }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    state = (await res.json()) as State;
+    const data = (await res.json()) as State & { error?: string };
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    state = data;
     draft = clone(state.domains);
     dirty = false;
     selected.clear();
     renderAll();
     hideModal("settingsModal");
-    toast("路径已更新，技能库已重新扫描", "success");
+    toast(`路径已保存并重新扫描：${state.configStorePath ?? "配置文件"}`, "success");
+    if (state.configSource === "cli" || state.configSource === "env") {
+      notice("本次运行由启动参数 / 环境变量指定了技能目录，优先级高于已保存的路径；下次启动仍以它们为准。");
+    }
   } catch (error) {
     toast(error instanceof Error ? error.message : String(error), "error");
   }
@@ -511,13 +540,15 @@ function openDetail(id: string): void {
     <tr><th>${esc(k)}</th><td>${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</td></tr>
   `).join("");
   const domain = effectiveDomain(s);
+  const categoryLabel = skillCategory(s) === "user-command" ? "用户命令（/命令）" : (domain ?? "全局");
   el("detailBody").innerHTML = `
     <div class="detail-grid">
       <div><span class="dl">目录</span><strong>${esc(s.dirName)}</strong></div>
-      <div><span class="dl">当前领域</span><strong>${esc(domain ?? "全局")}</strong></div>
+      <div><span class="dl">当前分类</span><strong>${esc(categoryLabel)}</strong></div>
       <div><span class="dl">文件数</span><strong>${esc(s.fileCount)}</strong></div>
       <div><span class="dl">总大小</span><strong>${esc(formatBytes(s.totalBytes))}</strong></div>
     </div>
+    ${skillCategory(s) === "user-command" ? `<div class="detail-warn">此技能标记为 disable-model-invocation：只能由用户手动触发（如 /${esc(s.name)}），模型不会自动调用，也不能分配到领域。它不在 skilljack 的 catalog 里，但仍可被 load-skill 显式加载。</div>` : ""}
     ${s.issue ? `<div class="detail-warn">${esc(s.issue)}</div>` : ""}
     <div class="detail-path"><span class="dl">SKILL.md</span><code>${esc(s.skillPath || "—")}</code></div>
     ${s.topDirs.length ? `<div class="detail-path"><span class="dl">子目录</span><code>${esc(s.topDirs.join(" · "))}</code></div>` : ""}
@@ -553,14 +584,14 @@ el("skillRows").addEventListener("change", (e) => {
   if (target.checked) selected.add(id); else selected.delete(id);
   renderBulkbar();
   const all = el<HTMLInputElement>("selectAll");
-  const assignableVisible = visibleSkills().filter((s) => s.valid && !s.isLink);
+  const assignableVisible = visibleSkills().filter((s) => s.valid && !s.isLink && s.modelInvocable);
   all.checked = assignableVisible.length > 0 && assignableVisible.every((s) => selected.has(s.dirName));
 });
 
 el<HTMLInputElement>("selectAll").addEventListener("change", (e) => {
   const checked = (e.target as HTMLInputElement).checked;
   for (const s of visibleSkills()) {
-    if (!s.valid || s.isLink) continue;
+    if (!s.valid || s.isLink || !s.modelInvocable) continue;
     if (checked) selected.add(s.dirName); else selected.delete(s.dirName);
   }
   renderRows();
@@ -569,7 +600,7 @@ el<HTMLInputElement>("selectAll").addEventListener("change", (e) => {
 
 el("btnInvert").addEventListener("click", () => {
   for (const s of visibleSkills()) {
-    if (!s.valid || s.isLink) continue;
+    if (!s.valid || s.isLink || !s.modelInvocable) continue;
     if (selected.has(s.dirName)) selected.delete(s.dirName); else selected.add(s.dirName);
   }
   renderRows();
@@ -642,6 +673,7 @@ el("btnSettings").addEventListener("click", () => {
   if (!state) return;
   el<HTMLInputElement>("cfgSkillsDir").value = state.skillsDir;
   el<HTMLInputElement>("cfgMapPath").value = state.mapPath;
+  el("cfgStorePath").textContent = state.configStorePath ?? "~/.skilljack/config.json";
   showModal("settingsModal");
 });
 el("btnCancelSettings").addEventListener("click", () => hideModal("settingsModal"));

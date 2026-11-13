@@ -329,6 +329,41 @@ function escapeToolXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/**
+ * Compact domain directory embedded in the `find-skills-for-task` description.
+ *
+ * Some hosts never surface MCP server instructions to the model — Pi's built-in
+ * MCP client is one of them — so the catalog's <skill_preflight> and
+ * <skill_domains> are invisible there. A `direct`-exposed tool description is
+ * the one channel those hosts always deliver. Keep it to domain names plus one
+ * line each: trigger words stay server-side, where scoreTaskAgainstDomains()
+ * actually uses them, instead of adding ~800B of word lists to every request.
+ *
+ * Domain definitions come from domains.json (fixed at startup, the same freeze
+ * that applies to initialize.instructions), so no dynamic refresh is needed;
+ * the tool handler still rebuilds routing on every call.
+ */
+export function getFindSkillsToolDescription(skillState: SkillState): string {
+  const skills = getModelInvocableSkills(Array.from(skillState.skillMap.values()));
+  const routing = buildDomainRouting(skills);
+  if (!routing.enabled || routing.domains.length === 0) return FIND_SKILLS_USAGE;
+
+  const lines = [
+    "<skill_domains>",
+    "Pass the task text to `task`; the server scores it against domain triggers and " +
+      "returns the best-matching domain with its skill entries. Available domains:",
+  ];
+  for (const d of routing.domains) {
+    lines.push(
+      `- ${escapeToolXml(d.name)}: ${escapeToolXml(
+        d.description || `${d.skills.length} skills`
+      )}`
+    );
+  }
+  lines.push("</skill_domains>");
+  return `${FIND_SKILLS_USAGE}\n\n${lines.join("\n")}`;
+}
+
 /** Compact <domains> directory, shared by the no-argument and no-match paths. */
 function renderDomainDirectory(routing: DomainRouting): string {
   const lines = ["<domains>"];
@@ -362,7 +397,7 @@ function registerFindSkillsTool(server: McpServer, skillState: SkillState): void
     "find-skills-for-task",
     {
       title: "Find Skills for a Task",
-      description: FIND_SKILLS_USAGE,
+      description: getFindSkillsToolDescription(skillState),
       inputSchema: FindSkillsSchema,
       annotations: {
         readOnlyHint: true,

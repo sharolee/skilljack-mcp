@@ -10,6 +10,10 @@ import {
   validateDomainMap,
   writeDomainMap,
   computeState,
+  ADMIN_CONFIG_KEY,
+  firstLocalSkillDirectory,
+  readPersistedPaths,
+  writePersistedPaths,
   type DomainMap,
 } from "./core.js";
 
@@ -169,6 +173,15 @@ describe("validateDomainMap", () => {
     expect(result.warnings.join(" ")).toContain("ghost-tool");
   });
 
+  it("warns (but does not block) on a slash-only skill referenced by a domain", () => {
+    writeSkill("quiet", validFm("quiet-tool", "disable-model-invocation: true"));
+    const { skills, prefix } = makeContext();
+    const result = validateDomainMap({ domains: [{ name: "design", skills: ["quiet-tool"] }] }, skills, prefix);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.join(" ")).toContain("quiet-tool");
+    expect(result.warnings.join(" ")).toContain("disable-model-invocation");
+  });
+
   it("blocks duplicate domains, empty names, non-array skills and multi-domain membership", () => {
     const { skills, prefix } = makeContext();
     expect(validateDomainMap({ domains: [{ name: "", skills: [] }] }, skills, prefix).errors.join(" ")).toContain("name");
@@ -275,5 +288,123 @@ describe("computeState", () => {
     expect(state.stats.eligible).toBe(0);
     expect(state.stats.global).toBe(0);
     expect(state.skills[0].domain).toBeNull();
+  });
+
+  it("distinguishes a slash-only reference from a missing one in warnings", () => {
+    writeSkill("quiet", validFm("quiet-tool", "disable-model-invocation: true"));
+    const mapPath = writeMap({
+      version: 1,
+      domains: [
+        {
+          name: "design",
+          description: "界面设计",
+          triggers: [],
+          antiTriggers: [],
+          skills: ["quiet-tool", "ghost-tool"],
+        },
+      ],
+    });
+    const state = computeState({ skillsDir: root, mapPath });
+    const joined = state.warnings.join(" ");
+    expect(joined).toContain("quiet-tool");
+    expect(joined).toContain("disable-model-invocation");
+    expect(joined).toContain("ghost-tool");
+    expect(joined).toContain("未发现");
+    // The slash-only one must NOT be reported as "not found" — the message is
+    // cause-specific.
+    const quietWarn = state.warnings.find((w) => w.includes("quiet-tool"))!;
+    expect(quietWarn).not.toContain("未发现");
+    expect(state.skills.find((s) => s.name === "quiet-tool")!.modelInvocable).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persisted admin paths (~/.skilljack/config.json)
+// ---------------------------------------------------------------------------
+
+describe("persisted admin paths", () => {
+  const store = () => path.join(root, ".skilljack", "config.json");
+  const skillsDir = () => path.join(root, "skills");
+  const mapPath = () => path.join(root, "domains.json");
+
+  it("treats a missing config directory and file as unconfigured", () => {
+    expect(readPersistedPaths(store())).toEqual({ skillsDir: "", mapPath: "" });
+    expect(fs.existsSync(path.dirname(store()))).toBe(false);
+    expect(firstLocalSkillDirectory(undefined)).toBe("");
+  });
+
+  it("creates the directory and writes an upstream-compatible config", () => {
+    const result = writePersistedPaths(store(), { skillsDir: skillsDir(), mapPath: mapPath() });
+    expect(result.backupPath).toBeNull();
+    expect(fs.existsSync(store())).toBe(true);
+    const parsed = JSON.parse(fs.readFileSync(store(), "utf-8")) as Record<string, unknown>;
+    expect(parsed.skillDirectories).toEqual([path.resolve(skillsDir())]);
+    expect(parsed[ADMIN_CONFIG_KEY]).toEqual({
+      skillsDir: path.resolve(skillsDir()),
+      domainMap: path.resolve(mapPath()),
+    });
+    expect(readPersistedPaths(store())).toEqual({
+      skillsDir: path.resolve(skillsDir()),
+      mapPath: path.resolve(mapPath()),
+    });
+    expect(fs.readdirSync(path.dirname(store())).filter((f) => f.includes(".tmp-"))).toHaveLength(0);
+  });
+
+  it("keeps unknown upstream keys, remote sources and other local directories", () => {
+    const first = path.join(root, "first");
+    const second = path.join(root, "second");
+    fs.mkdirSync(path.dirname(store()), { recursive: true });
+    fs.writeFileSync(store(), `${JSON.stringify({
+      skillDirectories: [first, "https://github.com/org/repo", second],
+      staticMode: true,
+      skillInvocationOverrides: { foo: { assistant: true } },
+      githubAllowedOrgs: ["org"],
+    }, null, 2)}\n`, "utf-8");
+
+    const result = writePersistedPaths(store(), { skillsDir: second, mapPath: mapPath() });
+    expect(result.backupPath).toBeTruthy();
+    const parsed = JSON.parse(fs.readFileSync(store(), "utf-8")) as Record<string, unknown>;
+    expect(parsed.skillDirectories).toEqual([
+      path.resolve(second),
+      path.resolve(first),
+      "https://github.com/org/repo",
+    ]);
+    expect(parsed.staticMode).toBe(true);
+    expect(parsed.skillInvocationOverrides).toEqual({ foo: { assistant: true } });
+    expect(parsed.githubAllowedOrgs).toEqual(["org"]);
+  });
+
+  it("falls back to the first local skillDirectories entry without the fork key", () => {
+    const local = path.join(root, "local");
+    fs.mkdirSync(path.dirname(store()), { recursive: true });
+    fs.writeFileSync(store(), JSON.stringify({
+      skillDirectories: ["https://example.org/skills.json", local],
+    }), "utf-8");
+    expect(readPersistedPaths(store())).toEqual({ skillsDir: path.resolve(local), mapPath: "" });
+    expect(firstLocalSkillDirectory(["https://example.org/x", local])).toBe(path.resolve(local));
+  });
+
+  it("an explicitly cleared skills directory does not fall back", () => {
+    writePersistedPaths(store(), { skillsDir: skillsDir(), mapPath: mapPath() });
+    writePersistedPaths(store(), { skillsDir: "", mapPath: mapPath() });
+    expect(readPersistedPaths(store())).toEqual({ skillsDir: "", mapPath: path.resolve(mapPath()) });
+  });
+
+  it("backs up a corrupt config file before rebuilding it", () => {
+    fs.mkdirSync(path.dirname(store()), { recursive: true });
+    fs.writeFileSync(store(), "{ not json", "utf-8");
+    const result = writePersistedPaths(store(), { skillsDir: skillsDir(), mapPath: mapPath() });
+    expect(result.backupPath).toBeTruthy();
+    expect(fs.readFileSync(result.backupPath!, "utf-8")).toBe("{ not json");
+    expect(() => JSON.parse(fs.readFileSync(store(), "utf-8"))).not.toThrow();
+    expect(readPersistedPaths(store()).skillsDir).toBe(path.resolve(skillsDir()));
+  });
+
+  it("ignores remote sources when picking the first local directory", () => {
+    expect(firstLocalSkillDirectory([
+      "https://github.com/org/repo",
+      "https://example.org/skills.json",
+      42,
+    ])).toBe("");
   });
 });

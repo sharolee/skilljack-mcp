@@ -227,6 +227,15 @@ boundaries (+2), domain descriptions add weak evidence (+1), any
 the winner to be suggested. A `Task skill routing: …` line on stderr records
 every decision so the word lists can be tuned over time.
 
+**Hosts that never surface `instructions`**: some clients do not pass MCP server
+instructions to the model, so `<skill_preflight>` and `<skill_domains>` are
+invisible there. The `find-skills-for-task` tool description therefore carries a
+compact fallback directory — domain names plus one-line descriptions, no
+trigger words (~2 KB). A declared tool description is the one channel those
+hosts reliably deliver; trigger words stay server-side for scoring. Hosts that
+also drop the preflight contract out of their system prompt still need the same
+one-line rule repeated in their own persistent instructions.
+
 **Routing is discovery-only.** It never removes a skill from the server's
 skill map: `load-skill`, `skill-resource`, `resources/list`, the SEP-2640
 `skills/list` / `skills/get` and `/skill` prompts still expose every skill. A
@@ -313,12 +322,24 @@ npm run domains-ui
 npm run domains-ui -- --skills-dir=<path-to-skills> --domain-map=<path-to-domains.json> --port=5178
 ```
 
-Open `http://127.0.0.1:5178`. Path resolution order: CLI flags > `SKILLS_DIR` /
-`SKILLJACK_DOMAIN_MAP` / `SKILLJACK_ADMIN_PORT` / `SKILLJACK_ADMIN_HOST` >
-`~/.skilljack/config.json` > `./domains.json` in the repo root. Paths can also
-be changed at runtime from the in-app Settings dialog (in-memory only; nothing
-is written to a config file). The build step (`npm run build:admin`) runs
-automatically on startup and is also available on its own.
+Open `http://127.0.0.1:5178`. Path resolution order: CLI flags > environment
+variables (`SKILLS_DIR`, `SKILLJACK_DOMAIN_MAP`, `SKILLJACK_ADMIN_PORT`,
+`SKILLJACK_ADMIN_HOST`) > `~/.skilljack/config.json` > `./domains.json` in the
+repo root. Paths changed in the in-app Settings dialog are **persisted** to
+`~/.skilljack/config.json` — the directory and file are created if missing, and
+every write keeps a timestamped backup and uses an atomic rename — so the next
+start reuses them without setup. That file is shared with the MCP server:
+`skillDirectories[0]` is the skills root, while the fork-private
+`skilljackAdmin` key stores the domain-map path and an explicitly cleared
+skills root (upstream loaders ignore it). Override the store with
+`--admin-config=<path>` / `SKILLJACK_ADMIN_CONFIG`. CLI flags and environment
+variables still win over saved paths, and the UI reports which source is active.
+
+The top-bar **Save changes** / **Reset** buttons act on the *domain assignment
+draft* (writing `domains.json`, or discarding unsaved edits); they do not touch
+paths. The Settings dialog's **Save and apply** button is what persists paths.
+The build step (`npm run build:admin`) runs automatically on startup and is
+also available on its own.
 
 What it does:
 

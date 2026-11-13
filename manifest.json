@@ -26,7 +26,7 @@
   "tools": [
     { "name": "load-skill", "description": "Load a skill's full instructions on demand" },
     { "name": "skill-resource", "description": "Read files referenced by skill instructions (scripts, snippets, templates)" },
-    { "name": "find-skills-for-task", "description": "Find skills relevant to a task by expanding the matching domain" }
+    { "name": "find-skills-for-task", "description": "Find skills relevant to a task by expanding the matching domain; its description lists the available domains" }
   ],
   "prompts": [
     { "name": "skill", "description": "Load a skill by name with auto-completion", "arguments": ["name"], "text": "Load the skill named ${arguments.name}." }

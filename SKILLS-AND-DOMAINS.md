@@ -276,7 +276,7 @@ domain routing: ON — 2 domain(s) [design=4, test=2], 11 global skill(s); map: 
 | 改了 `domains.json` 但主 catalog 没变 | stdio 下 `instructions` 启动时冻结 | 重启客户端 / 重连 MCP（§4） |
 | `find-skills-for-task` 返回 “not active” | 映射缺失/非法触发了 fail-open，或设了 `off` | 看 stderr 警告，修正 JSON 或路径 |
 | 传 `task` 总是未命中 | 触发词太泛或太窄、任务说法与词表不一致 | 看 stderr 的 `Task skill routing:` 打分明细，按 §5.5 调整 `triggers`；临时可改传 `domain` |
-| 模型仍然不主动调用工具 | 客户端把 MCP `instructions` 放在低权重区 | 确认握手文本含 `<skill_preflight>`；必要时在宿主一等规则里重申同一句契约，或换用支持 MCP Skills Extension 的宿主 |
+| 模型仍然不主动调用工具 | 客户端把 MCP `instructions` 放在低权重区，或完全不展示 | 确认 `tools/list` 中 `find-skills-for-task` 的描述含 `<skill_domains>` 与全部域名；握手文本含 `<skill_preflight>`；必要时在宿主常驻规则里重申同一句契约，或换用支持 MCP Skills Extension 的宿主 |
 | 日志出现 `skill "X" not found (ignored)` | `skills[]` 里名字写错，或该技能未被发现 | 用 base name 核对拼写 |
 | 日志出现 `already assigned to another domain` | 同一技能被多个域认领 | 只保留一个域的登记 |
 | 某个 `.md` 没出现在资源清单 | 它在 `assets/` 或其他被忽略的目录里 | 白名单下调整 `--ignore-dirs`；或用 `resources/directory/read` 直接浏览（清单隐藏不影响读取） |
@@ -351,9 +351,10 @@ npm run domains-ui
 npm run domains-ui -- --skills-dir=<SKILLS_DIR> --domain-map=<REPO_ROOT>/domains.json --port=5178
 ```
 
-启动后打开 `http://127.0.0.1:5178`。路径也可在界面的「路径设置」里临时切换（仅内存生效，不写配置文件）。
+启动后打开 `http://127.0.0.1:5178`。路径也可在界面「路径设置」里修改，点「保存并应用」会写入 `~/.skilljack/config.json`（目录 / 文件不存在时自动创建，带时间戳备份与原子写），下次启动自动读取；可用 `--admin-config=` / `SKILLJACK_ADMIN_CONFIG` 改存储位置，启动参数与环境变量仍优先。该文件与 MCP server 共用 `skillDirectories[0]`，控制台另用私有键 `skilljackAdmin` 记录映射路径。注意顶栏「保存更改 / 重置」只作用于领域分配草稿（`domains.json`），不负责保存路径。
 
 - **查看 / 搜索**：技能表实时过滤名称、描述、路径、领域；点「详情」看 frontmatter、SKILL.md 全文、资源统计。符号链接、缺 `SKILL.md`、frontmatter 不合法的技能会标红提示，不会被悄悄忽略。
+- **三类技能一目了然**：每一行按「当前分类」着色区分——**全局**（主 catalog 全量列出）、**领域**（按需展开）、**用户命令**（SKILL.md 标了 `disable-model-invocation: true`，只能由用户手动 `/命令` 触发，模型不自动发现，也不参与领域路由）。顶栏 KPI 分别给出三类数量。**用户命令这一类不可分配领域**：复选框被禁用，批量操作也不会选中它；若 `domains.json` 里误写了这类技能，校验与扫描会给出专门的提示（区别于「目录不存在」），建议直接从映射移除。
 - **批量配置领域**：多选技能 → 一键移入某领域 / 新建领域 / 移回全局。分配是「移动」语义，自动从原领域移除，符合服务端一技能只归一域的规则。
 - **领域维护**：增删改领域，编辑 `description` / `triggers` / `antiTriggers`，移除单个成员。
 - **成本预览**：实时估算主 catalog 的字节数 / tokens 及相对全平铺的节省比例，包含未保存改动。

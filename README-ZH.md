@@ -214,6 +214,8 @@ load-skill("<技能名>")       →  完整 SKILL.md（未改动）
 
 领域名匹配**不区分大小写**。该工具只读、幂等，且**独立于 `--tools` 注册**（它正是为没有技能扩展的客户端提供的发现层，不能被 `--tools=auto` 顺带禁用）；每次调用都重新读取实时技能状态，因此文件监听新发现的技能无需重启即可见。路由关闭时工具仍然存在，只是回答「所有技能都是全局」。
 
+> **不展示 `instructions` 的宿主**：有些客户端不会把 MCP 握手里的 `instructions` 交给模型，`<skill_preflight>` 与 `<skill_domains>` 因此不可见。本分支在 `find-skills-for-task` 的**工具描述**里附带一份精简域清单（域名 + 一行描述，不含触发词）作为兜底：只要工具被声明给模型，域信息就一定可见。触发词仍只留在服务端用于打分，不占用每次请求的上下文。若宿主连固定契约都不进系统提示，还需在宿主的常驻规则里重申同一句话。
+
 > **改名说明**：本分支早期把该工具叫作 `route-domain`，因名字里看不出与技能有关而改为 `find-skills-for-task`。**旧名没有注册别名**，请更新已保存的提示词与客户端片段并重启 MCP 客户端（启动参数不变）。
 
 ### 必须记住的不变量
@@ -239,11 +241,14 @@ npm run domains-ui -- --skills-dir=<SKILLS_DIR> --domain-map=<path-to-domains.js
 
 打开 `http://127.0.0.1:5178`。路径解析顺序：
 
-- 技能目录：`--skills-dir` > `SKILLS_DIR` > `~/.skilljack/config.json` 中第一个本地 `skillDirectories` 项 > 未配置（界面会提示）；
-- 映射文件：`--domain-map` > `SKILLJACK_DOMAIN_MAP` > `<REPO_ROOT>/domains.json`；
-- 监听地址 / 端口：`--host` > `SKILLJACK_ADMIN_HOST` > `127.0.0.1`；`--port` > `SKILLJACK_ADMIN_PORT` > `5178`。
+- 技能目录：`--skills-dir` > `SKILLS_DIR` > 配置文件中的 `skilljackAdmin.skillsDir`（无此键时取第一个本地 `skillDirectories` 项）> 未配置（界面会提示）；
+- 映射文件：`--domain-map` > `SKILLJACK_DOMAIN_MAP` > 配置文件中的 `skilljackAdmin.domainMap` > `<REPO_ROOT>/domains.json`；
+- 监听地址 / 端口：`--host` > `SKILLJACK_ADMIN_HOST` > `127.0.0.1`；`--port` > `SKILLJACK_ADMIN_PORT` > `5178`；
+- 配置文件位置：`--admin-config` > `SKILLJACK_ADMIN_CONFIG` > `~/.skilljack/config.json`。
 
-也可在界面「设置」里临时切换路径（仅内存生效，不写配置文件）。启动时会自动执行 `npm run build:admin`，也可单独运行。HTTP 接口为 `GET /api/state`、`POST /api/config`、`PUT /api/domains`、`GET /api/health`。
+界面「路径设置」里点「保存并应用」会把两个路径**写入该配置文件**：目录 / 文件不存在时自动创建，写入前做时间戳备份并原子替换，下次启动自动读取，无需重新设置。该文件与上游 MCP server 共用 —— `skillDirectories[0]` 是技能库根目录，fork 私有键 `skilljackAdmin` 记录映射路径与「用户主动清空」状态，上游加载器会忽略它。启动参数 / 环境变量的优先级仍高于已保存路径，界面会提示当前生效来源。
+
+**按钮职责要分清**：顶栏「保存更改」把领域分配草稿校验后写入 `domains.json`（带备份），「重置」丢弃未保存的草稿 —— 两者都不管路径；路径由「路径设置」弹窗的「保存并应用」单独保存。启动时会自动执行 `npm run build:admin`，也可单独运行。HTTP 接口为 `GET /api/state`、`POST /api/config`、`PUT /api/domains`、`GET /api/health`。
 
 界面能力：
 

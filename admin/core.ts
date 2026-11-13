@@ -67,6 +67,8 @@ export interface AdminStats {
   linked: number;
   eligible: number;
   global: number;
+  /** Skills tagged `disable-model-invocation` — user-triggered /commands only. */
+  userCommand: number;
   domainCount: number;
   byDomain: Record<string, number>;
   flatCatalogBytes: number;
@@ -389,6 +391,7 @@ export function validateDomainMap(raw: unknown, skills: SkillRecord[], prefix: s
       const key = trimmed.toLowerCase();
       const skill = known.get(key);
       if (!skill) warnings.push(`领域 "${name}" 引用的技能 "${trimmed}" 在当前技能库中不存在（服务端会忽略）`);
+      else if (!skill.modelInvocable) warnings.push(`领域 "${name}" 引用的技能 "${trimmed}" 标记为 disable-model-invocation（仅用户手动触发），不参与路由，建议从领域移除`);
       // De-duplicate by resolved skill, not by raw string: a base name and a
       // qualified name can point at the same skill, and the server would warn
       // about "already assigned to another domain" on duplicates.
@@ -527,9 +530,15 @@ export function computeState(config: AdminConfig): AdminState {
   }
 
   // Resolve assignments (same precedence as the server).
+  // `byKey` holds only model-invocable skills (the routable pool); `allValidByKey`
+  // holds every valid skill so we can tell a genuinely-missing reference apart
+  // from one that points at a `disable-model-invocation` ("user command") skill.
   const byKey = new Map<string, SkillRecord>();
+  const allValidByKey = new Map<string, SkillRecord>();
   for (const skill of skills) {
-    if (!skill.valid || !skill.modelInvocable) continue;
+    if (!skill.valid || skill.isLink) continue;
+    for (const key of skillKeys(skill, prefix)) allValidByKey.set(key, skill);
+    if (!skill.modelInvocable) continue;
     for (const key of skillKeys(skill, prefix)) byKey.set(key, skill);
   }
   const claimed = new Set<string>(); // dirName
@@ -538,7 +547,12 @@ export function computeState(config: AdminConfig): AdminState {
     for (const rawName of def.skills) {
       const skill = byKey.get(rawName.toLowerCase());
       if (!skill) {
-        warnings.push(`领域 "${def.name}" 引用的技能 "${rawName}" 未发现（服务端会忽略）`);
+        const maybe = allValidByKey.get(rawName.toLowerCase());
+        if (maybe && !maybe.modelInvocable) {
+          warnings.push(`领域 "${def.name}" 引用的技能 "${rawName}" 标记为 disable-model-invocation（仅用户手动触发 / 命令），不应出现在领域映射中，服务端会忽略`);
+        } else {
+          warnings.push(`领域 "${def.name}" 引用的技能 "${rawName}" 未发现（目录不存在或无效，服务端会忽略）`);
+        }
         continue;
       }
       if (claimed.has(skill.dirName)) {
@@ -560,6 +574,7 @@ export function computeState(config: AdminConfig): AdminState {
   }
 
   const eligible = skills.filter((s) => s.valid && s.modelInvocable && !s.isLink);
+  const userCommandSkills = skills.filter((s) => s.valid && !s.modelInvocable && !s.isLink);
   const globalSkills = eligible.filter((s) => s.domain === null);
   const byDomain: Record<string, number> = {};
   for (const def of map.domains) byDomain[def.name] = 0;
@@ -579,6 +594,7 @@ export function computeState(config: AdminConfig): AdminState {
     linked: skills.filter((s) => s.isLink).length,
     eligible: eligible.length,
     global: globalSkills.length,
+    userCommand: userCommandSkills.length,
     domainCount: map.domains.length,
     byDomain,
     flatCatalogBytes,
@@ -596,4 +612,125 @@ export function computeState(config: AdminConfig): AdminState {
     warnings,
     serverTime: new Date().toISOString(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Persisted admin paths (fork)
+//
+// The Paths dialog writes to ~/.skilljack/config.json so a configured console
+// does not have to be set up again on the next start. That file is shared with
+// the upstream MCP server: `skillDirectories` is its native schema (so the
+// server can pick up the same directory when no CLI path is given), while the
+// `skilljackAdmin` key is fork-private and ignored by upstream loaders. It also
+// records an explicitly cleared skills directory, which the fallback cannot.
+// ---------------------------------------------------------------------------
+
+/** Fork-private key inside ~/.skilljack/config.json. */
+export const ADMIN_CONFIG_KEY = "skilljackAdmin";
+
+export interface AdminPersistedPaths {
+  skillsDir: string;
+  mapPath: string;
+}
+
+function isRemoteSkillSource(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) || value.includes("github.com");
+}
+
+/** First usable local directory from the upstream `skillDirectories` array. */
+export function firstLocalSkillDirectory(values: unknown): string {
+  if (!Array.isArray(values)) return "";
+  const first = values.find(
+    (v): v is string => typeof v === "string" && v.trim() !== "" && !isRemoteSkillSource(v)
+  );
+  return first ? path.resolve(first) : "";
+}
+
+/** Read paths the console saved. Missing / unreadable files are not an error. */
+export function readPersistedPaths(configPath: string): AdminPersistedPaths {
+  if (!configPath || !fs.existsSync(configPath)) return { skillsDir: "", mapPath: "" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
+  } catch {
+    return { skillsDir: "", mapPath: "" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { skillsDir: "", mapPath: "" };
+  }
+  const root = parsed as Record<string, unknown>;
+  const raw = root[ADMIN_CONFIG_KEY];
+  const admin = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : null;
+
+  // An empty string in the fork key means the user deliberately cleared the
+  // path; do not silently fall back to skillDirectories in that case.
+  const rawSkills = admin && typeof admin.skillsDir === "string" ? admin.skillsDir.trim() : "";
+  const skillsDir = admin
+    ? (rawSkills ? path.resolve(rawSkills) : "")
+    : firstLocalSkillDirectory(root.skillDirectories);
+  const rawMap = admin && typeof admin.domainMap === "string" ? admin.domainMap.trim() : "";
+  return { skillsDir, mapPath: rawMap ? path.resolve(rawMap) : "" };
+}
+
+/** Merge the paths into the shared config file: keep every unknown upstream
+ *  key, keep other configured directories, back up the old file and write
+ *  atomically. The MCP server reads `skillDirectories[0]` when it is not
+ *  overridden by CLI arguments or SKILLS_DIR. */
+export function writePersistedPaths(
+  configPath: string,
+  paths: AdminPersistedPaths
+): { backupPath: string | null } {
+  if (!configPath) throw new Error("未配置文件存储路径");
+  const skillsDir = paths.skillsDir.trim() ? path.resolve(paths.skillsDir.trim()) : "";
+  const mapPath = paths.mapPath.trim() ? path.resolve(paths.mapPath.trim()) : "";
+
+  let existing: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A corrupt file is backed up below and rebuilt from scratch.
+      existing = {};
+    }
+  }
+
+  const previous = Array.isArray(existing.skillDirectories)
+    ? existing.skillDirectories.filter((v): v is string => typeof v === "string")
+    : [];
+  const rest = previous.filter((v) => v !== skillsDir);
+  existing.skillDirectories = skillsDir ? [skillsDir, ...rest] : previous;
+  existing[ADMIN_CONFIG_KEY] = { skillsDir, domainMap: mapPath };
+
+  const dir = path.dirname(configPath);
+  fs.mkdirSync(dir, { recursive: true });
+
+  let backupPath: string | null = null;
+  if (fs.existsSync(configPath)) {
+    const stamp = backupStamp();
+    let candidate = `${configPath}.bak-${stamp}`;
+    let suffix = 1;
+    while (fs.existsSync(candidate)) candidate = `${configPath}.bak-${stamp}-${suffix++}`;
+    backupPath = candidate;
+    fs.copyFileSync(configPath, backupPath);
+    pruneBackups(configPath);
+  }
+
+  const tmp = `${configPath}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(existing, null, 2)}\n`, "utf-8");
+    fs.renameSync(tmp, configPath);
+  } catch (error) {
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch {
+      // best effort
+    }
+    throw error;
+  }
+  return { backupPath };
 }

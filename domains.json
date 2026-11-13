@@ -19,7 +19,8 @@
         "design",
         "frontend",
         "toast",
-        "通知组件"
+        "通知组件",
+        "原型"
       ],
       "antiTriggers": [
         "纯后端逻辑",

@@ -22,6 +22,8 @@ import {
   computeState,
   validateDomainMap,
   writeDomainMap,
+  readPersistedPaths,
+  writePersistedPaths,
   type AdminConfig,
 } from "./core.js";
 
@@ -44,19 +46,24 @@ function firstPath(value: string | undefined): string {
   return value.split(",").map((p) => p.trim()).filter(Boolean)[0] ?? "";
 }
 
-/** Upstream skilljack stores configured directories in ~/.skilljack/config.json. */
-function skillsDirFromSkilljackConfig(): string {
-  const file = path.join(os.homedir(), ".skilljack", "config.json");
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as { skillDirectories?: unknown };
-    if (!Array.isArray(parsed.skillDirectories)) return "";
-    const first = parsed.skillDirectories.find(
-      (p): p is string => typeof p === "string" && !p.startsWith("http") && !p.includes("github.com")
-    );
-    return first ? path.resolve(first) : "";
-  } catch {
-    return "";
-  }
+/** Shared with the upstream MCP server; the Paths dialog persists here. */
+const configStorePath = (() => {
+  const explicit = flag("admin-config") ?? process.env.SKILLJACK_ADMIN_CONFIG;
+  return explicit && explicit.trim()
+    ? path.resolve(explicit.trim())
+    : path.join(os.homedir(), ".skilljack", "config.json");
+})();
+
+type ConfigSource = "cli" | "env" | "config" | "none";
+
+const persistedPaths = readPersistedPaths(configStorePath);
+const cliSkillsDir = flag("skills-dir");
+const envSkillsDir = process.env.SKILLS_DIR;
+
+function currentConfigSource(): ConfigSource {
+  if (cliSkillsDir) return "cli";
+  if (envSkillsDir) return "env";
+  return config.skillsDir ? "config" : "none";
 }
 
 function inferMapPath(): string {
@@ -64,17 +71,23 @@ function inferMapPath(): string {
   if (explicit && !["off", "0", "false", "none"].includes(explicit.toLowerCase())) {
     return path.resolve(explicit);
   }
+  if (persistedPaths.mapPath) return persistedPaths.mapPath;
   return path.join(REPO_ROOT, "domains.json");
 }
 
-const inferredSkillsDir =
-  firstPath(flag("skills-dir") ?? process.env.SKILLS_DIR) || skillsDirFromSkilljackConfig();
+const inferredSkillsDir = firstPath(cliSkillsDir ?? envSkillsDir) || persistedPaths.skillsDir;
 // An empty value means "not configured". Never resolve("") — that would
 // silently turn into the process working directory.
 const config: AdminConfig = {
   skillsDir: inferredSkillsDir ? path.resolve(inferredSkillsDir) : "",
   mapPath: inferMapPath(),
 };
+
+/** Every state response carries where the paths came from and where they are
+ *  saved, so the UI can explain CLI/env overrides instead of looking broken. */
+function statePayload() {
+  return { ...computeState(config), configStorePath, configSource: currentConfigSource() };
+}
 
 const HOST = flag("host") ?? process.env.SKILLJACK_ADMIN_HOST ?? "127.0.0.1";
 const PORT = Number(flag("port") ?? process.env.SKILLJACK_ADMIN_PORT ?? 5178);
@@ -149,18 +162,39 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const method = req.method ?? "GET";
 
   if (route === "/api/state" && method === "GET") {
-    sendJson(res, 200, computeState(config));
+    sendJson(res, 200, statePayload());
     return;
   }
 
   if (route === "/api/config" && method === "POST") {
     const body = (await readJsonBody(req)) as Record<string, unknown>;
+    const previous = { skillsDir: config.skillsDir, mapPath: config.mapPath };
     if (typeof body.skillsDir === "string") {
       const value = body.skillsDir.trim();
       config.skillsDir = value ? path.resolve(value) : "";
     }
-    if (typeof body.mapPath === "string" && body.mapPath.trim()) config.mapPath = path.resolve(body.mapPath.trim());
-    sendJson(res, 200, computeState(config));
+    if (typeof body.mapPath === "string") {
+      const value = body.mapPath.trim();
+      config.mapPath = value ? path.resolve(value) : "";
+    }
+
+    // Persist first: if the config file is not writable, do not leave the
+    // running console believing the paths were saved.
+    let configBackupPath: string | null = null;
+    try {
+      ({ backupPath: configBackupPath } = writePersistedPaths(configStorePath, {
+        skillsDir: config.skillsDir,
+        mapPath: config.mapPath,
+      }));
+    } catch (error) {
+      config.skillsDir = previous.skillsDir;
+      config.mapPath = previous.mapPath;
+      sendJson(res, 500, {
+        error: `路径保存失败：${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+    sendJson(res, 200, { ...statePayload(), configBackupPath });
     return;
   }
 
@@ -178,7 +212,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const { backupPath } = writeDomainMap(config.mapPath, result.map);
-    sendJson(res, 200, { ok: true, backupPath, warnings: result.warnings, state: computeState(config) });
+    sendJson(res, 200, { ok: true, backupPath, warnings: result.warnings, state: statePayload() });
     return;
   }
 
@@ -209,7 +243,8 @@ server.listen(PORT, HOST, () => {
   console.log(`  ─────────────────────────────────────────────`);
   console.log(`  地址        http://${HOST}:${PORT}`);
   console.log(`  技能库      ${config.skillsDir || "(未配置 — 可在界面右上角设置)"}`);
-  console.log(`  领域映射    ${config.mapPath}`);
+  console.log(`  领域映射    ${config.mapPath || "(未配置)"}`);
+  console.log(`  配置存储    ${configStorePath}（来源：${currentConfigSource()}）`);
   console.log(`  ─────────────────────────────────────────────`);
   console.log(`  仅监听本机；写回前自动校验 + 备份。Ctrl+C 退出。\n`);
 });
