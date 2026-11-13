@@ -19,12 +19,14 @@
 | 单个技能附带成千上万个设计资产 / 二进制文件 | `resources/list` 与 SEP-2640 `skills/list` 清单被 URI 淹没，上下文在开工前就被吃掉，甚至突破单技能 512 文件 / 16 MiB 的互操作上限 | **仅影响清单的资源过滤**（第 4 节）：把重资产从**自动枚举**中隐藏，显式读取照常可用 |
 | 扁平的 `<available_skills>` 目录把每个技能都写进每次连接的 `instructions` | 每个技能约 574 B ≈ 143 tokens，100+ 技能即 14K+ tokens，且与当前任务是否相关无关 | **领域路由**（第 5 节）：主目录只列全局技能 + 精简领域索引，模型按需展开某一个领域 |
 | 上百个技能靠手改 JSON 打标签 | 易错、难审阅、难评估上下文成本 | **Web 控制台**（第 6 节）：搜索、批量分配、校验、成本预览、自动备份 |
+| 把技能藏起来，也一并藏掉了「它们存在」这件事；模型不会主动想到先找技能，只能每个任务显式提醒 | 每个任务 | **发现前置契约**（第 5 节）：`instructions` 开头的 `<skill_preflight>` + 服务端「任务 → 领域」自动打分 |
 
-由此形成四层渐进披露，模型只在真正需要时才为下一层付费：
+由此形成五层渐进披露，模型只在真正需要时才为下一层付费：
 
 ```
-initialize instructions             →  全局技能 + <skill_domains> 精简索引（只有域名/描述/数量/提示词）
-route-domain("<领域名>")             →  该领域的 <available_skills> 条目
+initialize instructions             →  <skill_preflight> 契约 + 全局技能 + <skill_domains> 精简索引
+find-skills-for-task(task)          →  服务端按触发词打分 → 最佳领域的 <available_skills> 条目
+find-skills-for-task(domain)        →  （可选）再展开一个明确指定的领域
 load-skill("<技能名>")               →  完整 SKILL.md（与上游完全一致）
 resources/read / skill-resource <路径> →  单个配套文件：脚本、样式、资产
 ```
@@ -103,7 +105,7 @@ skilljack-mcp --http=3000 <SKILLS_DIR>
 # 或：SKILLJACK_HTTP_PORT=3000 skilljack-mcp <SKILLS_DIR>
 ```
 
-**传输方式**：默认 stdio；`--http[=port]` 为无状态 Streamable HTTP（`POST /mcp`，默认端口 3000），暴露核心技能能力（`load-skill`、`skill-resource`、`skill://` 资源、`skills/list` / `skills/get`、`/skill` 与各技能 prompts）。必须写成 `--http=<端口>`，否则 `--http 3000` 会把 `3000` 当作技能目录。HTTP 监听所有网卡且**无鉴权**，仅适合可信网络；MCP Apps 配置界面只在 stdio 下可用。由于是无状态传输，服务端不会主动推送 `listChanged` / `resources/updated`，已连接的客户端在下次请求或重连时看到变化；stdio 下则与上游一致，由文件监听与远端轮询保持状态新鲜。
+**传输方式**：默认 stdio；`--http[=port]` 为无状态 Streamable HTTP（`POST /mcp`，默认端口 3000），暴露核心技能能力（`load-skill`、`skill-resource`、`skill://` 资源、`skills/list` / `skills/get`、`/skill` 与各技能 prompts）。必须写成 `--http=<端口>`，否则 `--http 3000` 会把 `3000` 当作技能目录。HTTP 监听所有网卡且**无鉴权**，仅适合可信网络；已弃用的 MCP Apps 配置界面默认不注册（见第 8 节）。由于是无状态传输，服务端不会主动推送 `listChanged` / `resources/updated`，已连接的客户端在下次请求或重连时看到变化；stdio 下则与上游一致，由文件监听与远端轮询保持状态新鲜。
 
 **技能扩展（SEP-2640）**：声明 `io.modelcontextprotocol/skills`（含 `directoryRead`），实现 `skills/list`、`skills/get`、`resources/directory/read`。每个条目携带原样 frontmatter 以及 `SKILL.md` 与全部配套文件的 `{uri, digest, size}` 清单，供宿主校验；文件通过 `resources/read` 以 `skill://<技能路径>/<文件>` 逐个读取。在 2026-07-28 版连接上，结果还带扩展要求的 `ttlMs` / `cacheScope` 缓存属性。超过 `MAX_FILE_SIZE_MB`（默认 1）的文件既不服务也不列出；预 v1 的 `skill://index.json` 仍然兼容。
 
@@ -152,16 +154,20 @@ skilljack-mcp --http=3000 <SKILLS_DIR>
 
 ## 5. Fork：领域路由（按需发现技能）
 
-扁平目录把每个技能都写进 `instructions`，成本随技能数线性增长。分支增加**可选的第三层发现机制**：给技能打领域标签，主 catalog 只保留未标记的「全局技能」+ 精简领域索引，模型通过 `route-domain` 工具按需展开某个领域。
+扁平目录把每个技能都写进 `instructions`，成本随技能数线性增长。分支增加**可选的第三层发现机制**：给技能打领域标签，主 catalog 只保留未标记的「全局技能」+ 精简领域索引，模型通过 `find-skills-for-task` 工具按需展开某个领域。
+
+渐进披露有个代价：模型看不到技能名字，就无法判断「有没有技能与任务相关」，于是「相关就先加载」这类条件式指令永远不会触发。分支用**发现前置契约**补上这一环：把契约放在 `instructions` 最前面，让「开工前调用一次」成为无条件动作，并把相关性判断移进服务端。
 
 ```
-主 catalog（instructions）  →  全局技能 + <skill_domains> 索引（只有名字）
-        │ 模型判断任务命中某领域
+主 catalog（instructions）  →  <skill_preflight> + 全局技能 + <skill_domains> 索引
+        │ 任何非平凡任务开始（无条件）
         ▼
-route-domain("design")      →  该领域的 <available_skills> 条目
+find-skills-for-task(task)  →  服务端按触发词打分 → 最佳领域的 <available_skills> 条目
         ▼
 load-skill("<技能名>")       →  完整 SKILL.md（未改动）
 ```
+
+因此 `triggers` / `antiTriggers` 已是**可执行的路由规则**，不只是提示：中文词按子串命中（+3）、英文词按词边界（+2）、领域描述提供弱证据（+1）、任一 `antiTriggers` 命中直接否决该域，次名需达到首名 70% 才会一并返回。每次决策都会在 stderr 打印 `Task skill routing: …`，便于长期维护词表。
 
 **路由只改变发现方式，不改变可达性**：技能不会被移出服务端的技能表，`load-skill`、`skill-resource`、`resources/list`、SEP-2640 的 `skills/list` / `skills/get` 以及 `/skill` prompts 仍能看到全部技能。模型已知技能名可直接加载，支持技能扩展的宿主看到的仍是全量列表。**没有领域的技能自动成为全局技能**，按上游方式全列，因此该功能可选且向后兼容。
 
@@ -195,21 +201,26 @@ load-skill("<技能名>")       →  完整 SKILL.md（未改动）
 
 映射缺失或非法时**fail-open**：全部技能退回全局，服务端照常运行并在 stderr 告警；随时可用 `--domain-map=off` 回到上游行为，无需删除任何文件。启动时 stderr 会打印生效策略（领域数、各领域技能数、全局技能数、映射路径）。
 
-### `route-domain` 工具
+### `find-skills-for-task` 工具
 
 | 调用 | 返回 |
 | --- | --- |
-| `route-domain()` | `<domains>` 目录：每个领域的名字、描述、技能数量、触发词 |
-| `route-domain({ "domain": "design" })` | 该领域的 `<available_skills>` 条目（name / description / uri / location），随后用 `load-skill` 加载选中的技能 |
-| `route-domain({ "domain": "nope" })` | 报错并列出有效领域名 |
+| `find-skills-for-task({ "task": "把表格做得更紧凑" })` | **推荐的第一步动作**：`<task_routing>`（最佳领域、得分、命中的触发词）+ 该领域的 `<available_skills>` 条目；一次调用即可，无需自己猜领域 |
+| `find-skills-for-task()` | `<domains>` 目录：每个领域的名字、描述、技能数量、触发词 |
+| `find-skills-for-task({ "domain": "design" })` | 该领域的 `<available_skills>` 条目（name / description / uri / location），随后用 `load-skill` 加载选中的技能 |
+| `find-skills-for-task({ "domain": "nope" })` | 报错并列出有效领域名 |
+
+显式传 `domain` 时**优先于** `task`；`task` 为空等同于不传参数。没有领域达到打分阈值时，返回领域目录并提示按全局技能继续——所以传 `task` 永远安全（fail-open）。只展开**得分最高的一个**领域，接近的次名放在 `<also_relevant>` 里，需要时再传 `domain` 二次调用，避免一次塞进两个领域的 token。
 
 领域名匹配**不区分大小写**。该工具只读、幂等，且**独立于 `--tools` 注册**（它正是为没有技能扩展的客户端提供的发现层，不能被 `--tools=auto` 顺带禁用）；每次调用都重新读取实时技能状态，因此文件监听新发现的技能无需重启即可见。路由关闭时工具仍然存在，只是回答「所有技能都是全局」。
+
+> **改名说明**：本分支早期把该工具叫作 `route-domain`，因名字里看不出与技能有关而改为 `find-skills-for-task`。**旧名没有注册别名**，请更新已保存的提示词与客户端片段并重启 MCP 客户端（启动参数不变）。
 
 ### 必须记住的不变量
 
 - 清单过滤只影响**自动枚举**，显式读取与磁盘路径执行始终可用；
 - 领域路由只重塑「模型默认看到的目录」，**不移除任何技能的可达性**；
-- 一个技能只归一个领域；重复登记以第一个为准；`triggers` / `antiTriggers` 只是给模型的提示，**没有服务端自动判定**；
+- 一个技能只归一个领域；重复登记以第一个为准；`triggers` / `antiTriggers` 是**服务端打分规则**（传 `task` 时生效），同时仍写进领域索引供模型参考；
 - 映射失效时 fail-open，服务不中断；
 - 领域索引的成本是 **O(领域数)** 而非 O(技能数)，这是能扩展到 100+ 技能的关键；
 - stdio 下 `instructions` 在启动时冻结，改完配置要**重启客户端**才能看到一致的主 catalog。
@@ -265,6 +276,7 @@ npm run domains-ui -- --skills-dir=<SKILLS_DIR> --domain-map=<path-to-domains.js
 | `--domain-map=<路径>\|off` | `SKILLJACK_DOMAIN_MAP` | 存在 `./domains.json` 时启用 | 领域路由开关 |
 | `--catalog=<instructions\|tool-description>` | `SKILLJACK_CATALOG` | `instructions` | 目录投递通道（上游） |
 | `--tools=<auto\|always\|never>` | `SKILLJACK_TOOLS` | `auto` | `load-skill` / `skill-resource` 可见性（上游） |
+| `--ui-tools=<on\|off>` | `SKILLJACK_UI_TOOLS` | `off` | 恢复已弃用的上游 MCP Apps 工具、UI prompts 与 `ui://` 资源 |
 
 完整的上游参数（`--static`、`--http`、`SKILLS_DIR`、GitHub / well-known 白名单等）见维护指南第 9 节。
 
@@ -273,8 +285,8 @@ npm run domains-ui -- --skills-dir=<SKILLS_DIR> --domain-map=<path-to-domains.js
 | 路径 | 职责 |
 | --- | --- |
 | `src/resource-filter.ts` | 过滤策略、默认值、黑名单 / 白名单判定、启动日志 |
-| `src/skill-tool.ts` | 仅在 `listSkillFiles()` 应用过滤；拆分主 catalog；定义 `route-domain` |
-| `src/domain-router.ts` | 解析映射、frontmatter 兜底、名称匹配、告警与 fail-open |
+| `src/skill-tool.ts` | 仅在 `listSkillFiles()` 应用过滤；拆分主 catalog；输出 `<skill_preflight>`；定义 `find-skills-for-task`（task / domain / 无参）并记录 stderr 决策日志 |
+| `src/domain-router.ts` | 解析映射、frontmatter 兜底、名称匹配、告警与 fail-open，以及纯函数式「任务 → 领域」打分 |
 | `src/index.ts` | CLI 说明与两项策略的 stderr 摘要 |
 | `domains.json` | 可移植的领域映射示例 |
 | `admin/core.ts` | 技能扫描、映射校验、原子写入、备份、catalog 成本估算 |
@@ -298,13 +310,13 @@ npm run domains-ui -- --skills-dir=<SKILLS_DIR> --domain-map=<path-to-domains.js
 
 ---
 
-## 8. 配置与技能展示界面（上游）
+## 8. 已弃用：上游 MCP Apps 配置 / 展示界面
 
-服务端自带基于 [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/) 的界面：支持它的客户端可以直接在聊天窗口里配置技能目录与可见性，无需手改配置文件或环境变量。界面中设置的目录保存在 `~/.skilljack/config.json`，仅当命令行与 `SKILLS_DIR` 都未指定目录时生效。`--static` 与 `--http` 模式下不可用。
+上游原本附带 11 个 `skill-config-*` / `skill-display-*` 工具、`/skills` 与 `/skill-config` 两个 prompts，以及两个 `ui://` 资源，用于能渲染 [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/) 的客户端。**本分支默认不注册这一整套界面**：多数客户端（pi、WorkBuddy、opencode）打不开它，它写入的配置又被命令行传入的技能目录覆盖，留在 `tools/list` 里只会白占 11 条工具描述的上下文。默认工具面只有 `load-skill`、`skill-resource`、`find-skills-for-task` 三个。
 
-![Skills Configuration UI](docs/images/skills-config-ui.png)
+需要恢复时加 `--ui-tools=on`（或 `SKILLJACK_UI_TOOLS=on`）；工具、prompts、`ui://` 资源由同一个开关统一控制，不会出现「prompt 让模型调用不存在的工具」。`--static` 与 `--http` 下依旧不可用。配置文件**读取**（`~/.skilljack/config.json`）仍然生效，去掉的只是聊天窗口里的编辑器；领域维护请改用本分支的独立 Web 控制台（第 7 节）。
 
-![Skill Display UI](docs/images/skill-display-ui.png)
+源码文件保留并标注 `@deprecated`，方便日后同步上游；它们不再出现在 `instructions`、工具描述、prompts、`manifest.json` 等任何模型可见的注册描述中。
 
 ---
 

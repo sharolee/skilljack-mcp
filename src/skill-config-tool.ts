@@ -5,6 +5,11 @@
  * - skill-config: Opens the configuration UI
  * - skill-config-add-directory: Adds a directory (UI-only)
  * - skill-config-remove-directory: Removes a directory (UI-only)
+ *
+ * @deprecated Fork: this whole UI surface is off by default. It is registered
+ * only with `--ui-tools=on` (or `SKILLJACK_UI_TOOLS=on`) and only on stdio in
+ * non-static mode. Kept in the tree so upstream changes can still be merged;
+ * do not add new tools here. Config-file *reading* stays in `skill-config.ts`.
  */
 
 import * as fs from "node:fs";

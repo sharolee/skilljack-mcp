@@ -74,4 +74,29 @@ describe("domain-routed catalog (instructions mode)", () => {
     expect(instructions).toContain("<name>local__webapp-testing</name>");
     expect(instructions).toContain("<name>local__caveman</name>");
   });
+
+  it("puts the discovery preflight ahead of the catalog when routing is active", () => {
+    const instructions = getCatalogInstructions(createTestSkillState(skills()), "auto");
+    expect(instructions.startsWith("<skill_preflight>")).toBe(true);
+    expect(instructions).toContain("`find-skills-for-task`");
+    expect(instructions).toContain("`task`");
+    const preflightEnd = instructions.indexOf("</skill_preflight>");
+    const catalogStart = instructions.indexOf("<available_skills>", preflightEnd);
+    expect(preflightEnd).toBeLessThan(catalogStart);
+    expect(catalogStart).toBeLessThan(instructions.indexOf("<skill_domains>"));
+  });
+
+  it("omits the preflight entirely when routing is disabled", () => {
+    process.env[mapEnv] = "off";
+    const instructions = getCatalogInstructions(createTestSkillState(skills()), "auto");
+    expect(instructions).not.toContain("<skill_preflight>");
+    expect(instructions).not.toContain("find-skills-for-task");
+  });
+
+  it("keeps the preflight under 700 bytes so catalog savings survive", () => {
+    const instructions = getCatalogInstructions(createTestSkillState(skills()), "auto");
+    const end = instructions.indexOf("</skill_preflight>") + "</skill_preflight>".length;
+    expect(end).toBeGreaterThan(0);
+    expect(Buffer.byteLength(instructions.slice(0, end))).toBeLessThan(700);
+  });
 });

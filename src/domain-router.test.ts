@@ -218,7 +218,7 @@ describe("renderDomainIndex", () => {
     expect(xml).toContain("<skill_count>1</skill_count>");
     expect(xml).toContain("<triggers>design, UI</triggers>");
     expect(xml).not.toContain("<name>a</name>"); // skill entries are NOT in the index
-    expect(xml).toContain("`route-domain`");
+    expect(xml).toContain("`find-skills-for-task`");
   });
 
   it("renders nothing when routing is disabled", () => {

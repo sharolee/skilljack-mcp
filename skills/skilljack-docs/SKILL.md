@@ -11,6 +11,8 @@ An MCP server that jacks [Agent Skills](https://agentskills.io) directly into yo
 
 > **Tool search / deferred tools.** By default, skilljack delivers its skill catalog via MCP **server instructions**, which arrive in the `initialize` handshake and reach the model even when **tool search / deferred tool loading** is enabled (the default on modern Claude Code, ~2.1.x) — automatic skill activation works out of the box. The legacy `--catalog=tool-description` mode (not recommended) delivers the catalog inside the `load-skill` tool description instead, but tool-search clients defer MCP tool descriptions out of context, so that mode requires disabling tool search (e.g. `ENABLE_TOOL_SEARCH=false`) for auto-activation. See [Catalog Delivery](#catalog-delivery).
 
+> **Fork: deprecated UI surface.** In this fork the upstream `skill-config-*` / `skill-display-*` tools, the `/skills` and `/skill-config` prompts and the two `ui://` resources are **not registered by default**. The sections below that describe them are historical; pass `--ui-tools=on` (or `SKILLJACK_UI_TOOLS=on`) to restore the whole surface on stdio. The default tool surface is exactly `load-skill`, `skill-resource` and `find-skills-for-task`. Domain routing and the admin console are documented in the repository's `README.md` / `SKILLS-AND-DOMAINS.md`.
+
 ## Features
 
 - **Dynamic Skill Discovery** - Watches skill directories and automatically refreshes when skills change
@@ -21,7 +23,7 @@ An MCP server that jacks [Agent Skills](https://agentskills.io) directly into yo
 - **MCP Resources** - Access skills via `skill://` URIs aligned with [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640)
 - **Skills extension (SEP-2640)** - Declares `io.modelcontextprotocol/skills` and serves `skills/list` / `skills/get` entries with verbatim frontmatter and per-file SHA-256 digests, so a skills-aware host can verify every file it reads
 - **Resource Subscriptions** - Real-time file watching with `notifications/resources/updated`
-- **Configuration UI** - Manage skill directories through an interactive UI in supported clients
+- **Configuration UI (deprecated in this fork, off by default)** - Manage skill directories through an interactive UI in supported clients; see the fork note above
 
 ## Motivation
 

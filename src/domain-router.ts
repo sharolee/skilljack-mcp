@@ -6,8 +6,9 @@
  * ~15k tokens before any work begins, and the cost grows linearly with the
  * library. This module adds an OPTIONAL second discovery layer: skills can be
  * tagged with a domain, and only untagged ("global") skills plus a compact
- * domain index are put in the main catalog. The model calls `route-domain` to
- * expand one domain into its skill entries, on demand.
+ * domain index are put in the main catalog. The model calls
+ * `find-skills-for-task` to expand one domain into its skill entries, either
+ * by naming it or by submitting a task description for server-side scoring.
  *
  * Design invariants:
  *  - Routing ONLY reshapes the catalog delivered to the model. It never
@@ -70,7 +71,7 @@ export interface RoutedDomain {
 /**
  * Result of splitting the discovered skills for catalog routing.
  * `global` skills are listed in the main catalog; `domains` are expandable on
- * demand via `route-domain`. `warnings` are surfaced on stderr at startup.
+ * demand via `find-skills-for-task`. `warnings` are surfaced on stderr at startup.
  */
 export interface DomainRouting {
   enabled: boolean;
@@ -266,10 +267,10 @@ export function renderDomainIndex(routing: DomainRouting): string {
   if (!routing.enabled || routing.domains.length === 0) return "";
   const lines: string[] = [
     "<skill_domains>",
-    "Some skills are grouped into domains and are NOT listed in <available_skills> above. " +
-      "To use one, call `route-domain` with the domain name; it returns that domain's skill " +
-      "entries (name, description, uri, location). Then call `load-skill` with the chosen name. " +
-      "A skill with no domain is global and already listed above.",
+    "Most skills are grouped into domains and are NOT listed in <available_skills> above. " +
+      "Use `find-skills-for-task` (see <skill_preflight>) to discover them: pass `task` to have " +
+      "the server pick a domain, or `domain` to expand a named one. Then call `load-skill` with " +
+      "the chosen name. A skill with no domain is global and already listed above.",
   ];
   for (const domain of routing.domains) {
     lines.push("<domain>");
@@ -286,6 +287,126 @@ export function renderDomainIndex(routing: DomainRouting): string {
   }
   lines.push("</skill_domains>");
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Task-aware skill discovery (fork addition)
+//
+// `triggers` / `antiTriggers` used to be advisory metadata only: the model had
+// to decide for itself whether to look for a skill, which progressive
+// disclosure makes hard because domain skills are absent from the main
+// catalog. This turns them into executable routing rules: the caller submits a
+// one-line task description and the server picks the domain(s) to expand.
+// ---------------------------------------------------------------------------
+
+/** How one domain scored against a free-form task description. */
+export interface TaskDomainMatch {
+  name: string;
+  score: number;
+  /** Explicit triggers that matched. */
+  hits: string[];
+  /** Weak evidence from the domain description. */
+  weakHits: string[];
+  /** Anti-triggers that matched; a match vetoes this domain entirely. */
+  antiHits: string[];
+  blocked: boolean;
+  domain: RoutedDomain;
+}
+
+export const TASK_MATCH_MIN_SCORE = 3;
+export const TASK_MATCH_RATIO = 0.7;
+export const TASK_MATCH_MAX_DOMAINS = 2;
+
+function hasCJK(text: string): boolean {
+  return /[\u3400-\u9fff]/.test(text);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whether a trigger term occurs in a normalized task string. CJK terms match
+ * as substrings; plain ASCII terms require word boundaries so "designer" does
+ * not match the trigger "design". Terms containing punctuation (Next.js,
+ * AGENTS.md, E2E) additionally fall back to a literal substring match.
+ */
+function triggerOccurrences(task: string, term: string): number {
+  const needle = term.trim().toLowerCase();
+  if (!needle) return 0;
+  if (hasCJK(needle)) return task.includes(needle) ? 1 : 0;
+  const boundary = new RegExp(`(^|[^a-z0-9])${escapeRegExp(needle)}(?=$|[^a-z0-9])`);
+  if (boundary.test(task)) return 1;
+  return /[^a-z0-9]/.test(needle) && task.includes(needle) ? 1 : 0;
+}
+
+/** Score every domain against a task. Pure, deterministic, and side-effect free. */
+export function scoreTaskAgainstDomains(routing: DomainRouting, task: string): TaskDomainMatch[] {
+  const normalized = task.toLowerCase().replace(/\s+/g, " ").trim();
+  const matches: TaskDomainMatch[] = [];
+
+  for (const domain of routing.domains) {
+    let score = 0;
+    const hits: string[] = [];
+    const antiHits: string[] = [];
+    const weakHits: string[] = [];
+
+    for (const trigger of domain.triggers) {
+      if (triggerOccurrences(normalized, trigger) > 0) {
+        score += hasCJK(trigger) ? 3 : 2;
+        hits.push(trigger);
+      }
+    }
+    for (const anti of domain.antiTriggers) {
+      if (triggerOccurrences(normalized, anti) > 0) antiHits.push(anti);
+    }
+
+    // Weak evidence from the prose description, only when not vetoed and only
+    // for words not already covered by an explicit trigger.
+    if (antiHits.length === 0) {
+      const words =
+        domain.description.toLowerCase().match(/[a-z][a-z0-9.+#-]{2,}|[\u3400-\u9fff]{2,4}/g) ?? [];
+      for (const word of new Set(words)) {
+        if (hits.some((h) => h.toLowerCase().includes(word) || word.includes(h.toLowerCase()))) continue;
+        if (triggerOccurrences(normalized, word) > 0) {
+          score += 1;
+          weakHits.push(word);
+        }
+      }
+    }
+
+    matches.push({
+      name: domain.name,
+      score: antiHits.length > 0 ? 0 : score,
+      hits,
+      weakHits,
+      antiHits,
+      blocked: antiHits.length > 0,
+      domain,
+    });
+  }
+
+  return matches.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+}
+
+/**
+ * Domains worth expanding for this task. A vetoed domain is never suggested;
+ * the runner-up must be close to the winner (and clear the minimum score), so
+ * a generic word like "design" does not drag in a second unrelated domain.
+ */
+export function suggestDomainsForTask(routing: DomainRouting, task: string): TaskDomainMatch[] {
+  if (!routing.enabled || routing.domains.length === 0) return [];
+  const scored = scoreTaskAgainstDomains(routing, task);
+  const best = scored[0];
+  if (!best || best.blocked || best.score < TASK_MATCH_MIN_SCORE) return [];
+  return scored
+    .filter(
+      (m) =>
+        !m.blocked &&
+        m.score >= TASK_MATCH_MIN_SCORE &&
+        m.score >= best.score * TASK_MATCH_RATIO
+    )
+    .slice(0, TASK_MATCH_MAX_DOMAINS);
 }
 
 /** One-line stderr summary of the active routing policy. */

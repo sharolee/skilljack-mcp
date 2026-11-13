@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,11 +9,14 @@ import { createTestSkill, createTestSkillState, createTestSource } from "./__tes
 import { SkillState } from "./skill-tool.js";
 
 /**
- * Exercise the fork's `route-domain` tool over a real in-memory MCP connection,
- * with a real on-disk SKILL.md so `load-skill` proves that routing is a
- * discovery-layer concern only: a domain-gated skill stays fully loadable.
+ * Exercise the fork's `find-skills-for-task` tool over a real in-memory MCP
+ * connection, with a real on-disk SKILL.md so `load-skill` proves that routing
+ * is a discovery-layer concern only: a domain-gated skill stays fully loadable.
+ *
+ * Covers all three entry points (task, domain, no arguments) plus the
+ * fail-open / precedence rules that keep older clients working unchanged.
  */
-describe("route-domain tool", () => {
+describe("find-skills-for-task tool", () => {
   let tmpRoot: string;
   let mapFile: string;
   let state: SkillState;
@@ -42,7 +45,7 @@ describe("route-domain tool", () => {
   }
 
   beforeAll(async () => {
-    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sj-route-domain-"));
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sj-find-skills-"));
     const designA = makeSkill("design-mobile-apps", "# Mobile design body");
     const designB = makeSkill("design-taste-frontend", "# Tasty frontend body");
     const testSkill = makeSkill("webapp-testing", "# Webapp testing body");
@@ -55,8 +58,19 @@ describe("route-domain tool", () => {
       JSON.stringify({
         version: 1,
         domains: [
-          { name: "design", description: "UI/UX design", triggers: ["design", "UI"], skills: ["design-mobile-apps", "design-taste-frontend"] },
-          { name: "test", description: "Webapp testing", skills: ["webapp-testing"] },
+          {
+            name: "design",
+            description: "UI/UX design",
+            triggers: ["设计", "页面", "UI"],
+            antiTriggers: ["单元测试"],
+            skills: ["design-mobile-apps", "design-taste-frontend"],
+          },
+          {
+            name: "test",
+            description: "Webapp testing",
+            triggers: ["测试", "Playwright", "E2E"],
+            skills: ["webapp-testing"],
+          },
         ],
       }),
       "utf-8"
@@ -82,16 +96,20 @@ describe("route-domain tool", () => {
     else process.env.SKILLJACK_DOMAIN_MAP = savedEnv;
   });
 
-  it("registers the route-domain tool alongside load-skill and skill-resource", async () => {
+  function textOf(res: { content: unknown }): string {
+    return (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+  }
+
+  it("registers find-skills-for-task alongside load-skill and skill-resource", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toContain("route-domain");
+    expect(names).toContain("find-skills-for-task");
     expect(names).toContain("load-skill");
     expect(names).toContain("skill-resource");
+    expect(names).not.toContain("route-domain");
   });
 
-  it("lists domains with no arguments", async () => {
-    const res = await client.callTool({ name: "route-domain", arguments: {} });
-    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+  it("lists domains with no arguments (backward-compatible path)", async () => {
+    const text = textOf(await client.callTool({ name: "find-skills-for-task", arguments: {} }));
     expect(text).toContain("<domains>");
     expect(text).toContain("<name>design</name>");
     expect(text).toContain("<skill_count>2</skill_count>");
@@ -100,8 +118,9 @@ describe("route-domain tool", () => {
   });
 
   it("expands a named domain into catalog skill entries", async () => {
-    const res = await client.callTool({ name: "route-domain", arguments: { domain: "design" } });
-    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    const text = textOf(
+      await client.callTool({ name: "find-skills-for-task", arguments: { domain: "design" } })
+    );
     expect(text).toContain("<available_skills>");
     expect(text).toContain("<name>local__design-mobile-apps</name>");
     expect(text).toContain("<name>local__design-taste-frontend</name>");
@@ -111,17 +130,92 @@ describe("route-domain tool", () => {
   });
 
   it("is case-insensitive on domain names", async () => {
-    const res = await client.callTool({ name: "route-domain", arguments: { domain: "TEST" } });
-    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
+    const text = textOf(
+      await client.callTool({ name: "find-skills-for-task", arguments: { domain: "TEST" } })
+    );
     expect(text).toContain("<name>local__webapp-testing</name>");
   });
 
   it("returns an error with available domains for an unknown domain", async () => {
-    const res = await client.callTool({ name: "route-domain", arguments: { domain: "nope" } });
+    const res = await client.callTool({
+      name: "find-skills-for-task",
+      arguments: { domain: "nope" },
+    });
     expect(res.isError).toBe(true);
-    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
-    expect(text).toContain('Unknown domain "nope"');
-    expect(text).toContain("design, test");
+    expect(textOf(res)).toContain('Unknown domain "nope"');
+    expect(textOf(res)).toContain("design, test");
+  });
+
+  it("scores a task and returns the best domain's skill entries in one call", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "find-skills-for-task",
+        arguments: { task: "帮我设计一个页面" },
+      })
+    );
+    expect(text).toContain("<task_routing>");
+    expect(text).toContain("<best_match>design</best_match>");
+    expect(text).toContain("<matched_triggers>");
+    expect(text).toContain("<available_skills>");
+    expect(text).toContain("<name>local__design-mobile-apps</name>");
+    expect(text).toContain("`load-skill`");
+    expect(text).not.toContain("<name>local__webapp-testing</name>");
+  });
+
+  it("logs the task -> domain decision to stderr for trigger maintenance", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await client.callTool({
+        name: "find-skills-for-task",
+        arguments: { task: "用 Playwright 补一个 E2E 用例" },
+      });
+      expect(spy.mock.calls.flat().join(" ")).toContain("Task skill routing:");
+      expect(spy.mock.calls.flat().join(" ")).toContain("test(");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("fails open to the domain directory when no domain matches a task", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "find-skills-for-task",
+        arguments: { task: "今天天气怎么样" },
+      })
+    );
+    expect(text).toContain("No domain matched this task");
+    expect(text).toContain("<domains>");
+    expect(text).not.toContain("<task_routing>");
+  });
+
+  it("lets an explicit domain override a task string", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "find-skills-for-task",
+        arguments: { task: "帮我设计一个页面", domain: "test" },
+      })
+    );
+    expect(text).toContain("<name>local__webapp-testing</name>");
+    expect(text).not.toContain("<task_routing>");
+  });
+
+  it("treats an empty task as the no-argument path", async () => {
+    const text = textOf(
+      await client.callTool({ name: "find-skills-for-task", arguments: { task: "   " } })
+    );
+    expect(text).toContain("<domains>");
+    expect(text).not.toContain("<task_routing>");
+  });
+
+  it("vetoes a domain whose antiTrigger matches the task", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "find-skills-for-task",
+        arguments: { task: "写单元测试，不要做界面设计" },
+      })
+    );
+    expect(text).toContain("<best_match>test</best_match>");
+    expect(text).not.toContain("<name>local__design-mobile-apps</name>");
   });
 
   it("still loads a domain-gated skill by name via load-skill", async () => {
@@ -130,14 +224,15 @@ describe("route-domain tool", () => {
       arguments: { name: "local__design-mobile-apps" },
     });
     expect(res.isError).not.toBe(true);
-    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
-    expect(text).toContain("# Mobile design body");
+    expect(textOf(res)).toContain("# Mobile design body");
   });
 
   it("keeps global skills loadable too", async () => {
-    const res = await client.callTool({ name: "load-skill", arguments: { name: "local__caveman" } });
+    const res = await client.callTool({
+      name: "load-skill",
+      arguments: { name: "local__caveman" },
+    });
     expect(res.isError).not.toBe(true);
-    const text = (res.content as Array<{ type: string; text: string }>).find((c) => c.type === "text")!.text;
-    expect(text).toContain("# Caveman body");
+    expect(textOf(res)).toContain("# Caveman body");
   });
 });

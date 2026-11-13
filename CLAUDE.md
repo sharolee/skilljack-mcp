@@ -125,7 +125,7 @@ Packaging: `manifest.json` + `.mcpbignore` define the `.mcpb` bundle (MCP Bundle
 | `getServerInstructions()` | skill-tool.ts | Server `instructions` for a catalog mode (undefined in tool-description mode) |
 | `getCatalogInstructions()` | skill-tool.ts | Usage preamble + skill list for instructions mode |
 | `registerSkillPrompts()` | skill-prompts.ts | Register /skill + per-skill prompts |
-| `registerUiPrompts()` | skill-prompts.ts | Register /skills and /skill-config, only where the UI tools are registered |
+| `registerUiPrompts()` | skill-prompts.ts | Fork: deprecated; register /skills and /skill-config only when `--ui-tools=on` (stdio, not static) |
 | `refreshPrompts()` | skill-prompts.ts | Update prompts when skills change |
 | `getPromptDescription()` | skill-prompts.ts | Usage text + skill list for prompt desc |
 | `refreshSubscriptions()` | subscriptions.ts | Update watchers when skills change |

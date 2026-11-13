@@ -196,7 +196,11 @@ export function registerSkillPrompts(
 /**
  * Register the /skills and /skill-config prompts. They ask the model to call
  * the skill-display and skill-config tools, so register them only where those
- * tools are registered (stdio, not static mode).
+ * tools are registered (stdio, not static mode, --ui-tools=on).
+ *
+ * @deprecated Fork: gated with the deprecated UI tools. Registering these
+ * prompts without their tools would leave the model pointing at tools that do
+ * not exist; the fork therefore skips both together by default.
  */
 export function registerUiPrompts(server: McpServer): void {
   // /skills opens the skill-display UI

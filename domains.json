@@ -3,29 +3,230 @@
   "domains": [
     {
       "name": "design",
-      "description": "UI/UX、界面与视觉设计：页面与落地页构建、移动端 App 设计、组件与设计系统、排版配色、动效打磨、前端审美评审。用于设计、构建、重做、美化或评审网页与产品界面。",
+      "description": "界面与视觉设计：页面、落地页、组件、设计系统、移动端 App、排版配色、前端审美与 UI 组件库选型。",
       "triggers": [
-        "设计", "UI", "UX", "界面", "前端", "页面", "落地页", "设计系统", "配色", "排版",
-        "美化", "style", "design", "frontend", "landing page", "UI polish"
+        "设计",
+        "UI",
+        "UX",
+        "界面",
+        "页面",
+        "落地页",
+        "组件",
+        "设计系统",
+        "配色",
+        "排版",
+        "美化",
+        "design",
+        "frontend",
+        "toast",
+        "通知组件"
       ],
-      "antiTriggers": ["纯后端逻辑", "数据库查询", "命令行工具开发"],
+      "antiTriggers": [
+        "纯后端逻辑",
+        "数据库查询",
+        "单元测试"
+      ],
       "skills": [
         "design-mobile-apps",
         "design-taste-frontend",
         "emil-design-eng",
         "frontend-design",
-        "ui-ux-pro-max"
+        "ui-ux-pro-max",
+        "ask-sonner"
+      ]
+    },
+    {
+      "name": "motion",
+      "description": "动效与交互手感：动画设计与实现、帧率与性能诊断、手势与弹簧动画、移动端原生感、动画术语与审计、该动/该删的判断，以及 React Native/Expo 动效。",
+      "triggers": [
+        "动画",
+        "动效",
+        "过渡",
+        "帧率",
+        "掉帧",
+        "手势",
+        "animation",
+        "motion",
+        "spring",
+        "移动端手感",
+        "拖拽",
+        "Expo",
+        "动画审计",
+        "动画术语"
+      ],
+      "antiTriggers": [
+        "静态视觉稿",
+        "配色排版",
+        "后端性能"
+      ],
+      "skills": [
+        "animate",
+        "animation-performance",
+        "apple-design",
+        "find-animation-opportunities",
+        "mobile-native",
+        "animate-expo",
+        "animation-vocabulary",
+        "choreograph",
+        "gestures",
+        "improve-animations",
+        "remove-animations"
+      ]
+    },
+    {
+      "name": "architecture",
+      "description": "架构与技术选型：系统设计与 ADR、API 风格、数据库模式与索引、深模块与领域模型、MCP server 设计、React/Next.js 性能规则、Swift 现代写法。",
+      "triggers": [
+        "架构",
+        "系统设计",
+        "ADR",
+        "技术选型",
+        "API 设计",
+        "数据库设计",
+        "模块设计",
+        "领域模型",
+        "MCP",
+        "React",
+        "Next.js",
+        "Swift"
+      ],
+      "antiTriggers": [
+        "写单个函数",
+        "修 bug",
+        "UI 美化"
+      ],
+      "skills": [
+        "architecture",
+        "api-patterns",
+        "database-design",
+        "codebase-design",
+        "domain-modeling",
+        "mcp-builder",
+        "vercel-react-best-practices",
+        "write-swift"
+      ]
+    },
+    {
+      "name": "quality",
+      "description": "代码质量与问题定位：代码评审、简化重构、疑难 bug 与性能回归诊断、合并冲突、交付前验证、git worktree 隔离。",
+      "triggers": [
+        "代码评审",
+        "review",
+        "重构",
+        "简化",
+        "debug",
+        "诊断",
+        "报错",
+        "冲突",
+        "交付验证",
+        "先证据后断言",
+        "worktree"
+      ],
+      "antiTriggers": [
+        "从零设计新系统",
+        "写测试",
+        "界面设计"
+      ],
+      "skills": [
+        "code-review",
+        "code-simplifier",
+        "diagnosing-bugs",
+        "resolving-merge-conflicts",
+        "verification-before-completion",
+        "using-git-worktrees"
       ]
     },
     {
       "name": "test",
-      "description": "Web 应用测试：用 Playwright 操作本地网页、验证前端功能、调试 UI 行为、截图与查看浏览器日志。",
+      "description": "测试与验证：TDD、修复失败测试、Playwright 用例与最佳实践、本地 Web 应用浏览器验证与截图、用极端数据压测 UI 边界。",
       "triggers": [
-        "测试", "test", "Playwright", "浏览器", "截图", "E2E", "UI 验证", "前端调试"
+        "测试",
+        "test",
+        "TDD",
+        "用例",
+        "失败测试",
+        "Playwright",
+        "E2E",
+        "浏览器验证",
+        "截图",
+        "极端数据",
+        "边界用例"
       ],
-      "antiTriggers": ["编写单元测试代码", "CI 流水线配置"],
+      "antiTriggers": [
+        "产品需求澄清",
+        "视觉设计"
+      ],
       "skills": [
-        "webapp-testing"
+        "tdd",
+        "test-fixing",
+        "playwright-best-practices",
+        "webapp-testing",
+        "break-ui"
+      ]
+    },
+    {
+      "name": "workflow",
+      "description": "需求与交付流程：追问澄清、原型验证、文件化任务规划、多 agent 并行编排与子 agent 驱动开发。",
+      "triggers": [
+        "需求",
+        "澄清",
+        "追问",
+        "规划",
+        "拆任务",
+        "spec",
+        "ticket",
+        "triage",
+        "交接",
+        "handoff",
+        "路线图",
+        "并行",
+        "子 agent",
+        "task_plan",
+        "多任务编排"
+      ],
+      "antiTriggers": [
+        "直接改一个小 bug",
+        "单文件编辑"
+      ],
+      "skills": [
+        "grilling",
+        "prototype",
+        "planning-with-files",
+        "dispatching-parallel-agents",
+        "subagent-driven-development"
+      ]
+    },
+    {
+      "name": "docs",
+      "description": "文档与写作：README、Word/Excel 文件处理、去 AI 腔的文本润色、技能编写、AGENTS.md 渐进披露重构、Mermaid 图表。",
+      "triggers": [
+        "文档",
+        "README",
+        "docx",
+        "xlsx",
+        "写作",
+        "润色",
+        "写作风格",
+        "AGENTS.md",
+        "写技能",
+        "Mermaid",
+        "图表",
+        "流程图",
+        "AGENTS.md 重构"
+      ],
+      "antiTriggers": [
+        "代码实现",
+        "运行测试"
+      ],
+      "skills": [
+        "crafting-effective-readmes",
+        "docx",
+        "xlsx",
+        "humanizer",
+        "writing-for-agents",
+        "skill-creator",
+        "agent-md-refactor",
+        "mermaid-diagrams"
       ]
     }
   ]

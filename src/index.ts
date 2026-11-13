@@ -13,9 +13,10 @@
  *   skilljack-mcp /local github.com/o/r https://ex.com               # Mixed sources
  *   SKILLS_DIR=/path,github.com/owner/repo skilljack-mcp             # Via environment
  *   SKILLJACK_STATIC=true skilljack-mcp                  # Static mode via env
- *   (or configure local directories via the skill-config UI)
  *
  * Options:
+ *   --ui-tools=on             Restore the deprecated MCP Apps config/display
+ *                             tools, prompts and ui:// resources (off by default).
  *   --static  Freeze skills list at startup. Disables file watching and
  *             tools/prompts listChanged notifications. Resource subscriptions
  *             remain fully dynamic.
@@ -30,7 +31,7 @@
  *                                  All of these have SKILLJACK_* env-var equivalents.
  *                                  Listing-only: explicit reads always work on demand.
  *   --domain-map=./domains.json    Domain routing: put only global skills + a compact domain
- *                                  index in the main catalog; expand via the route-domain tool.
+ *                                  index in the main catalog; expand via the find-skills-for-task tool.
  *                                  --domain-map=off disables it (flat catalog).
  *                                  Env equivalent: SKILLJACK_DOMAIN_MAP.
  */
@@ -284,6 +285,22 @@ function resolveEnumOption<T extends string>(
  */
 export function getToolsMode(): ToolsMode {
   return resolveEnumOption("tools mode", "--tools", "SKILLJACK_TOOLS", ["auto", "always", "never"], "auto");
+}
+
+/**
+ * Fork: the upstream MCP Apps configuration / display tools are deprecated and
+ * are NOT registered by default. Only MCP Apps-capable hosts can render them,
+ * the config they write is overridden by the CLI directories this fork always
+ * passes, and they otherwise add 11 unused tool definitions to model context.
+ *
+ * `--ui-tools=on` (or SKILLJACK_UI_TOOLS=on) restores the whole legacy surface
+ * — tools, `/skills` + `/skill-config` prompts and both `ui://` resources are
+ * gated together, so the model never sees a reference to a missing tool.
+ * `skill-config.ts` (config file *reading*) stays: startup still relies on it
+ * for active directories, invocation overrides and static mode.
+ */
+export function getUiToolsEnabled(): boolean {
+  return resolveEnumOption("UI tools", "--ui-tools", "SKILLJACK_UI_TOOLS", ["on", "off"], "off") === "on";
 }
 
 /**
@@ -714,6 +731,8 @@ const subscriptionManager = createSubscriptionManager();
 async function main() {
   // Check if static mode is enabled
   const isStatic = getStaticMode();
+  // Upstream MCP Apps config/display tools are deprecated and off by default.
+  const uiToolsEnabled = getUiToolsEnabled();
 
   // Get skill directories from CLI args, env var, or config file
   // This returns paths that may include GitHub URLs
@@ -853,6 +872,11 @@ async function main() {
     console.error("Static mode enabled - skills list frozen at startup");
   }
   console.error(describeResourceFilter());
+  console.error(
+    uiToolsEnabled
+      ? "UI tools: enabled (deprecated upstream MCP Apps config/display surface)"
+      : "UI tools: deprecated, not registered (use --ui-tools=on to restore)"
+  );
 
   // Discover skills at startup
   let skills = discoverSkillsFromDirs(currentSkillsDirs, currentSourceMap);
@@ -866,7 +890,7 @@ async function main() {
   warnLargeSkillCount(skills.length);
 
   // Fork: report the domain-routing policy so operators can see, from stderr,
-  // exactly which skills are global and which are hidden behind route-domain.
+  // exactly which skills are global and which are hidden behind find-skills-for-task.
   // Diagnostics only — does not mutate state.
   const domainRouting = buildDomainRouting(
     skills.filter((s) => s.effectiveAssistantInvocable)
@@ -882,8 +906,8 @@ async function main() {
   // initialize, which carries the instructions catalog) reads that state fresh.
   // What stateless HTTP cannot do is *push*: no listChanged/resources/updated
   // notifications, so already-connected clients see changes on their next
-  // request rather than being told to refresh. UI config/display tools remain
-  // stdio-only.
+  // request rather than being told to refresh. The deprecated UI config/display
+  // tools are stdio-only and off by default anyway.
   const httpPort = getHttpPort();
   const catalogMode = getCatalogMode();
   warnIfLegacyCatalogMode(catalogMode);
@@ -966,9 +990,12 @@ async function main() {
     // Register subscription handlers for resource file watching
     registerSubscriptionHandlers(server, skillState, subscriptionManager);
 
-    // Register skill-config tool for UI-based directory configuration
-    // Skip in static mode since skills list is frozen
-    if (!isStatic) {
+    // Deprecated upstream MCP Apps surface (skill-config-* / skill-display-*
+    // tools, /skills + /skill-config prompts, two ui:// resources).
+    // Off by default; --ui-tools=on restores the whole surface as one unit so
+    // no prompt ever points at an unregistered tool. --static also skips it
+    // because the skills list is frozen there.
+    if (!isStatic && uiToolsEnabled) {
       registerSkillConfigTool(server, skillState, async () => {
         // Callback when directories or remote-source settings change via UI.
         // Reload directories from config and refresh skills.

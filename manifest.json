@@ -26,13 +26,10 @@
   "tools": [
     { "name": "load-skill", "description": "Load a skill's full instructions on demand" },
     { "name": "skill-resource", "description": "Read files referenced by skill instructions (scripts, snippets, templates)" },
-    { "name": "skill-config", "description": "View and manage skill directory and source configuration" },
-    { "name": "skill-display", "description": "Open the skills management UI" }
+    { "name": "find-skills-for-task", "description": "Find skills relevant to a task by expanding the matching domain" }
   ],
   "prompts": [
-    { "name": "skill", "description": "Load a skill by name with auto-completion", "arguments": ["name"], "text": "Load the skill named ${arguments.name}." },
-    { "name": "skills", "description": "Open the skills list UI", "text": "Please open the skills display UI using the skill-display tool so I can view and manage my skills." },
-    { "name": "skill-config", "description": "Open the skills configuration UI", "text": "Please open the skills configuration UI using the skill-config tool so I can manage my skill directories." }
+    { "name": "skill", "description": "Load a skill by name with auto-completion", "arguments": ["name"], "text": "Load the skill named ${arguments.name}." }
   ],
   "prompts_generated": true,
   "compatibility": {
@@ -45,7 +42,7 @@
     "skills_path": {
       "type": "directory",
       "title": "Skills Directory",
-      "description": "Path to the directory containing your agent skills. Because this directory is always passed to the server, directories added in the configuration UI are saved but not used.",
+      "description": "Path to the directory containing your agent skills. Passed to the server on the command line (or via SKILLS_DIR); domains are maintained in domains.json.",
       "required": true
     }
   }

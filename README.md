@@ -17,13 +17,15 @@ Upstream skilljack is excellent for a modest skill library, but two things grow 
 | A skill that ships thousands of design assets / binaries floods `resources/list` and the SEP-2640 `skills/list` manifests, and can breach the per-skill 512-file / 16 MiB interop limits. | Context is spent before any work starts | [Listing-only resource filter](#fork-listing-only-resource-filter): hide heavy files from **automatic listings** only; explicit reads still work |
 | The flat `<available_skills>` catalog puts every skill in `instructions` on every connection (~574 B ≈ 143 tokens each, so 100+ skills cost 14k+ tokens up front). | Every connection, even for unrelated tasks | [Domain routing](#fork-domain-routing-on-demand-skill-discovery): main catalog lists global skills + a compact domain index; the model expands one domain on demand |
 | Tagging 100+ skills by hand-editing JSON is error-prone and hard to review. | Maintenance | [Domain admin console](#fork-domain-admin-console-web-ui): search, batch assign, validate, preview catalog cost, back up |
+| Hiding domain skills also hides the fact that they exist, so the model never thinks to look for one — every task needs an explicit reminder. | Every task | [Discovery preflight](#fork-domain-routing-on-demand-skill-discovery): a contract at the top of `instructions` plus server-side task → domain scoring |
 
-The resulting disclosure chain has four steps — the model pays for each layer only when it needs it:
+The resulting disclosure chain has five steps — the model pays for each layer only when it needs it:
 
 ```
-initialize instructions      →  global skills + compact <skill_domains> index (names only)
-route-domain("<domain>")     →  that domain's <available_skills> entries
-load-skill("<name>")         →  the full SKILL.md (upstream behaviour, unchanged)
+initialize instructions        →  <skill_preflight> contract + global skills + <skill_domains> index
+find-skills-for-task(task)     →  server scores the task → best domain's <available_skills> entries
+find-skills-for-task(domain)   →  (optional) a second, explicitly chosen domain
+load-skill("<name>")           →  the full SKILL.md (upstream behaviour, unchanged)
 resources/read, skill-resource <path>  →  one supporting file: script, style, asset
 ```
 
@@ -117,7 +119,7 @@ skilljack-mcp --http=3000 /path/to/skills
 # or: SKILLJACK_HTTP_PORT=3000 skilljack-mcp /path/to/skills
 ```
 
-**Transports:** stdio (default) or stateless HTTP (`--http[=port]`, default `3000`, or `SKILLJACK_HTTP_PORT`). HTTP serves the core skill surface (`load-skill`, `skill-resource`, `skill://` resources, `skills/list` / `skills/get`, and the `/skill` and per-skill prompts) at `POST /mcp`. Use the `--http=<port>` form: `--http 3000` treats `3000` as a skill directory. The HTTP server listens on all interfaces and has no authentication. Both transports use the MCP SDK's era-aware entry points, so a client negotiating MCP 2026-07-28 and a 2025-era client are served from the same server definition. Discovery-on-change works the same as stdio — file watchers and remote-source polling keep the skill state fresh, and every request (including each new client's `initialize`) reads it. Because the transport is stateless it does not *push* `listChanged`/`resources/updated` notifications: already-connected clients see changes on their next request or reconnect. The MCP-Apps configuration UI is stdio-only.
+**Transports:** stdio (default) or stateless HTTP (`--http[=port]`, default `3000`, or `SKILLJACK_HTTP_PORT`). HTTP serves the core skill surface (`load-skill`, `skill-resource`, `skill://` resources, `skills/list` / `skills/get`, and the `/skill` and per-skill prompts) at `POST /mcp`. Use the `--http=<port>` form: `--http 3000` treats `3000` as a skill directory. The HTTP server listens on all interfaces and has no authentication. Both transports use the MCP SDK's era-aware entry points, so a client negotiating MCP 2026-07-28 and a 2025-era client are served from the same server definition. Discovery-on-change works the same as stdio — file watchers and remote-source polling keep the skill state fresh, and every request (including each new client's `initialize`) reads it. Because the transport is stateless it does not *push* `listChanged`/`resources/updated` notifications: already-connected clients see changes on their next request or reconnect. The deprecated MCP Apps config/display UI is off by default (see below).
 
 **Skills extension (SEP-2640):** the server declares `io.modelcontextprotocol/skills` (with `directoryRead`) through the MCP TypeScript SDK's skills extension and implements `skills/list`, `skills/get` and `resources/directory/read`. Each entry carries the skill's verbatim frontmatter and a `{uri, digest, size}` manifest of `SKILL.md` and every supporting file, so a host can verify what it reads. Files are served one at a time via `resources/read` under `skill://<skill-path>/<file>`; on 2026-07-28 connections the `skills/list` and `skills/get` results also carry the `ttlMs` / `cacheScope` caching attributes the extension requires. Supporting files larger than `MAX_FILE_SIZE_MB` (default 1) are not served and therefore not listed. `skill://index.json` is still served for clients written against the pre-v1 index shape.
 
@@ -200,16 +202,30 @@ A flat `<available_skills>` catalog lists every skill in the server
 with the library. This fork adds an **optional third discovery layer**: tag
 skills with a domain, and only untagged ("global") skills plus a compact domain
 index are put in the main catalog. The model expands one domain on demand via
-the `route-domain` tool.
+the `find-skills-for-task` tool.
+
+Progressive disclosure has a discoverability cost: a model that cannot see a
+skill's name cannot judge whether "a skill is relevant", so a conditional
+instruction like *"load a relevant skill first"* never fires. This fork closes
+that gap with a **discovery preflight** — a short contract placed first in
+`instructions` that makes one call mandatory at the start of any non-trivial
+task, and moves the relevance judgement into the server:
 
 ```
-Main catalog (instructions)   →  global skills + <skill_domains> index (names only)
-        │ model sees a task matching a domain
+Main catalog (instructions)   →  <skill_preflight> + global skills + <skill_domains> index
+        │ any non-trivial task starts (unconditional)
         ▼
-route-domain("design")        →  that domain's <available_skills> entries
+find-skills-for-task(task)    →  server scores triggers → best domain's <available_skills> entries
         ▼
 load-skill("<name>")          →  full SKILL.md (unchanged)
 ```
+
+`triggers` / `antiTriggers` are therefore **executable routing rules**, not just
+advisory hints: CJK terms match as substrings (+3), ASCII terms at word
+boundaries (+2), domain descriptions add weak evidence (+1), any
+`antiTriggers` match vetoes the domain, and the runner-up must be within 70% of
+the winner to be suggested. A `Task skill routing: …` line on stderr records
+every decision so the word lists can be tuned over time.
 
 **Routing is discovery-only.** It never removes a skill from the server's
 skill map: `load-skill`, `skill-resource`, `resources/list`, the SEP-2640
@@ -263,15 +279,26 @@ The active policy (domains, skill counts, global count, map path) is printed to
 stderr at startup, e.g. `domain routing: ON — 2 domain(s) [design=3, test=1],
 N global skill(s); map: <path-to-domains.json>`.
 
-### The `route-domain` tool
+### The `find-skills-for-task` tool
 
 | Call | Returns |
 | --- | --- |
-| `route-domain()` | `<domains>` directory: name, description, skill count and triggers for every domain |
-| `route-domain({ "domain": "design" })` | That domain's `<available_skills>` entries (name / description / uri / location); then `load-skill` a chosen name |
-| `route-domain({ "domain": "nope" })` | An error listing the valid domain names |
+| `find-skills-for-task({ "task": "make this table denser" })` | **Recommended first action.** `<task_routing>` with the best-matching domain, its score and matched triggers, followed by that domain's `<available_skills>` entries — one call, no guessing which domain to expand |
+| `find-skills-for-task()` | `<domains>` directory: name, description, skill count and triggers for every domain |
+| `find-skills-for-task({ "domain": "design" })` | That domain's `<available_skills>` entries (name / description / uri / location); then `load-skill` a chosen name |
+| `find-skills-for-task({ "domain": "nope" })` | An error listing the valid domain names |
+
+An explicit `domain` always wins over `task`; an empty `task` behaves like no
+arguments. If no domain clears the scoring threshold, the tool returns the
+domain directory and tells the model to continue with the global skills — so
+passing a task is always safe (fail-open). Only the **winning** domain is
+expanded; a close runner-up is named in `<also_relevant>` and can be fetched
+with a second `domain` call, which keeps a single call to one domain's worth of
+tokens.
 
 Domain names are matched case-insensitively. The tool is read-only, idempotent, and registered **independently of `--tools`** (it is the discovery layer for clients *without* the skills extension, so `--tools=auto` must not disable it). Each call re-evaluates the live skill state, so skills added by the file watcher are visible without a restart. When routing is disabled the tool still exists and answers that all skills are global. Routing applies only to the default `--catalog=instructions` channel.
+
+> **Rename:** earlier revisions of this fork called the tool `route-domain`. The name was changed because it did not mention skills. The old name is **not** registered as an alias — update saved prompts and client snippets, then restart the MCP client (the launch arguments themselves are unchanged).
 
 ## Fork: domain admin console (web UI)
 
@@ -335,6 +362,7 @@ All fork flags use the `--flag=<value>` form; CLI > environment variable > built
 | `--allow-extensions=…` | `SKILLJACK_ALLOW_EXTENSIONS` | text / source / data formats | Whitelist: extensions to list |
 | `--ignore-dirs=…` | `SKILLJACK_IGNORE_DIRS` | test / build / cache dirs | Whitelist: directories to skip |
 | `--domain-map=<path>\|off` | `SKILLJACK_DOMAIN_MAP` | `./domains.json` if present | Domain routing on / off |
+| `--ui-tools=<on\|off>` | `SKILLJACK_UI_TOOLS` | `off` | Restore the deprecated upstream MCP Apps tools, UI prompts and `ui://` resources |
 
 Upstream options (`--static`, `--http`, `--tools`, `--catalog`, `SKILLS_DIR`, …) are unchanged; the maintainer guide has a [complete configuration reference](./SKILLS-AND-DOMAINS.md).
 
@@ -343,8 +371,8 @@ Upstream options (`--static`, `--http`, `--tools`, `--catalog`, `SKILLS_DIR`, �
 | Path | Role |
 | --- | --- |
 | `src/resource-filter.ts` | Filter policy, defaults, blacklist / whitelist predicates, startup description |
-| `src/skill-tool.ts` | Applies the filter in `listSkillFiles()` only; splits the main catalog; defines `route-domain` |
-| `src/domain-router.ts` | Reads `domains.json`, frontmatter fallback, name matching, warnings, fail-open |
+| `src/skill-tool.ts` | Applies the filter in `listSkillFiles()` only; splits the main catalog; emits `<skill_preflight>`; defines `find-skills-for-task` (task / domain / no-arg) and logs routing decisions to stderr |
+| `src/domain-router.ts` | Reads `domains.json`, frontmatter fallback, name matching, warnings, fail-open, and pure `task → domain` scoring |
 | `src/index.ts` | CLI flag documentation and stderr startup summary for both policies |
 | `domains.json` | Portable domain map (edit it, or copy it to your own path) |
 | `admin/core.ts` | Skill scanning, domain-map validation, atomic writes, backups, catalog-cost estimate |
@@ -366,15 +394,13 @@ Upstream options (`--static`, `--http`, `--tools`, `--catalog`, `SKILLS_DIR`, �
 
 The tests lock down the invariants that make this fork safe to deploy: **listing-only** (a hidden asset is still readable by URI and executable from its disk path), **discovery-only** (routing never removes a skill from the skill map, `load-skill` / `resources/list` / `skills/list` still see everything), **fail-open** (missing or invalid map degrades to a flat catalog), **one skill → one domain** with unknown names warned not hidden, **stdio purity** (stdout carries JSON-RPC only, even with `env: {}`), and **safe admin writes** (validate → timestamped backup → atomic rename; the skill library is never written to).
 
-## Configuration and Skills Display UI
+## Deprecated: upstream MCP Apps config/display UI
 
-This server comes along with a [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/)-based UI for clients that support it.  Instead of fiddling with config files or environment variables, you can just configure your skills locations and skill visiblity directly in your chat window. Locations set in the UI are saved to `~/.skilljack/config.json` and take effect only when no directories are given on the command line or in `SKILLS_DIR`. The UI is not available with `--static` or `--http`.
+Upstream shipped 11 `skill-config-*` / `skill-display-*` tools, the `/skills` and `/skill-config` prompts, and two `ui://` resources for hosts that render [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/). In this fork that surface is **deprecated and not registered by default**: only MCP Apps-capable hosts can render it, the config it writes is overridden by the CLI directories passed to the server, and 11 unused tool descriptions otherwise occupy model context. The default tool surface is exactly `load-skill`, `skill-resource` and `find-skills-for-task`.
 
-(Screenshots below are from Claude Desktop in dark mode.)
+Pass `--ui-tools=on` (or `SKILLJACK_UI_TOOLS=on`) to restore the whole legacy surface at once. Tools, prompts and `ui://` resources are gated together, so no prompt can reference a missing tool; `--static` and `--http` still cannot serve it. Config-file *reading* (`~/.skilljack/config.json`) continues to work — only the in-chat editors are gone. Use the [fork admin console](#fork-domain-admin-console-web-ui) for domain maintenance instead.
 
-![Skills Configuration UI](docs/images/skills-config-ui.png)
-
-![Skill Display UI](docs/images/skill-display-ui.png)
+The source files are kept and marked `@deprecated` so upstream merges stay straightforward; they are no longer part of the advertised capabilities, and nothing about them is written into server `instructions`, tool descriptions, prompts or `manifest.json`.
 
 ## Documentation
 

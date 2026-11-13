@@ -9,7 +9,7 @@ vi.mock("./skill-config.js", () => ({
 }));
 
 // Import after mocking
-import { classifyPaths, getStaticMode, getCatalogMode, warnIfLegacyCatalogMode } from "./index.js";
+import { classifyPaths, getStaticMode, getCatalogMode, getUiToolsEnabled, warnIfLegacyCatalogMode } from "./index.js";
 import { getStaticModeFromConfig } from "./skill-config.js";
 
 describe("classifyPaths", () => {
@@ -177,5 +177,55 @@ describe("warnIfLegacyCatalogMode", () => {
   it("stays silent for instructions mode", () => {
     warnIfLegacyCatalogMode("instructions");
     expect(console.error).not.toHaveBeenCalled();
+  });
+});
+
+describe("getUiToolsEnabled", () => {
+  const originalArgv = process.argv;
+  const originalEnv = process.env.SKILLJACK_UI_TOOLS;
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {}).mockClear();
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    if (originalEnv === undefined) {
+      delete process.env.SKILLJACK_UI_TOOLS;
+    } else {
+      process.env.SKILLJACK_UI_TOOLS = originalEnv;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the deprecated UI tools unregistered by default", () => {
+    process.argv = ["node", "script.js"];
+    delete process.env.SKILLJACK_UI_TOOLS;
+    expect(getUiToolsEnabled()).toBe(false);
+  });
+
+  it("restores them with --ui-tools=on", () => {
+    process.argv = ["node", "script.js", "--ui-tools=on"];
+    delete process.env.SKILLJACK_UI_TOOLS;
+    expect(getUiToolsEnabled()).toBe(true);
+  });
+
+  it("reads SKILLJACK_UI_TOOLS=on", () => {
+    process.argv = ["node", "script.js"];
+    process.env.SKILLJACK_UI_TOOLS = "ON";
+    expect(getUiToolsEnabled()).toBe(true);
+  });
+
+  it("lets an explicit --ui-tools=off override the env var", () => {
+    process.argv = ["node", "script.js", "--ui-tools=off"];
+    process.env.SKILLJACK_UI_TOOLS = "on";
+    expect(getUiToolsEnabled()).toBe(false);
+  });
+
+  it("warns and falls back to off on unknown values", () => {
+    process.argv = ["node", "script.js", "--ui-tools=yes"];
+    delete process.env.SKILLJACK_UI_TOOLS;
+    expect(getUiToolsEnabled()).toBe(false);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Unknown UI tools"));
   });
 });

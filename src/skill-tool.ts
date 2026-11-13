@@ -30,6 +30,8 @@ import {
 import {
   buildDomainRouting,
   renderDomainIndex,
+  scoreTaskAgainstDomains,
+  suggestDomainsForTask,
   type DomainRouting,
 } from "./domain-router.js";
 
@@ -124,6 +126,25 @@ export function getToolDescription(
 }
 
 /**
+ * Fork: the discovery contract. Placed FIRST in `initialize.instructions`
+ * (ahead of the catalog) because the old urgency clause was conditioned on
+ * "when a skill is relevant" — a judgement the model cannot make when domain
+ * skills are deliberately absent from <available_skills>. Triggering on the
+ * start of any non-trivial task instead turns discovery into a fixed opening
+ * action rather than a metacognitive guess.
+ */
+const SKILL_PREFLIGHT =
+  "<skill_preflight>\n" +
+  "Before starting any non-trivial task, call `find-skills-for-task` ONCE with " +
+  "`task` set to a one-line description of the task. It scores the task against " +
+  "domain triggers and returns the matching domain with its skill entries. This is " +
+  "the ONLY way to discover skills not listed in the main catalog.\n" +
+  "Do this BEFORE planning, answering, or writing code. Skip only for trivial " +
+  "exchanges (greetings, questions about this conversation). If no domain matches, " +
+  "continue with the global skills above.\n" +
+  "</skill_preflight>\n\n";
+
+/**
  * Server-instructions text for `--catalog=instructions` mode: the same usage
  * preamble + <available_skills> catalog that normally lives in the load-skill
  * tool description. The preamble names the tool because under tool search the
@@ -154,16 +175,20 @@ export function getCatalogInstructions(
           `(${SKILLS_EXTENSION_ID}), it loads a skill by that URI through its own ` +
           "skill loader and this server does not offer the `load-skill` tool. " +
           `Otherwise ${viaTool}\n\n`;
-  const urgency =
-    "IMPORTANT: When a skill is relevant to the user's task, you must load it " +
-    "IMMEDIATELY as your first action. NEVER just announce or mention a skill " +
-    "without actually loading it. This is a BLOCKING REQUIREMENT: load the skill " +
-    "BEFORE generating any other response about the task.\n\n";
   const routing = buildDomainRouting(modelInvocableSkills);
   for (const warning of routing.warnings) {
     console.error(`Domain routing: ${warning}`);
   }
+  const preflight = routing.enabled && routing.domains.length > 0 ? SKILL_PREFLIGHT : "";
+  const urgency =
+    "IMPORTANT: When a skill " +
+    (preflight ? "(listed above, or returned by `find-skills-for-task`) " : "") +
+    "is relevant to the user's task, you must load it IMMEDIATELY as your first " +
+    "action. NEVER just announce or mention a skill without actually loading it. " +
+    "This is a BLOCKING REQUIREMENT: load the skill BEFORE generating any other " +
+    "response about the task.\n\n";
   return (
+    preflight +
     intro +
     howToLoad +
     urgency +
@@ -255,33 +280,47 @@ export function registerSkillTool(
   // it is the discovery layer for clients WITHOUT the SEP-2640 skills
   // extension (i.e. exactly the clients that keep load-skill enabled), so it
   // must not be disabled by --tools=auto alongside the two skill tools.
-  registerRouteDomainTool(server, skillState);
+  registerFindSkillsTool(server, skillState);
 
   return { loadSkill: skillTool, skillResource };
 }
 
 /**
- * Input schema for the fork's `route-domain` tool. `domain` is optional: with
- * no argument the tool lists available domains; with a name it expands that
- * domain into the same <available_skills> XML the main catalog uses.
+ * Input schema for the fork's `find-skills-for-task` tool. Both arguments are
+ * optional. An explicit `domain` always wins; otherwise `task` triggers
+ * server-side scoring; with neither, the tool returns the domain directory.
  */
-const RouteDomainSchema = z.object({
+const FindSkillsSchema = z.object({
+  task: z
+    .string()
+    .optional()
+    .describe(
+      "One-line description of the user's task. The server scores it against domain " +
+        "triggers and returns the best-matching domain with its <available_skills> " +
+        "entries. Recommended as the FIRST action on any non-trivial task."
+    ),
   domain: z
     .string()
     .optional()
-    .describe("Domain name from <skill_domains>. Omit to list the available domains."),
+    .describe(
+      "Domain name from <skill_domains>. Expands that domain into skill entries. " +
+        "Omit to list all domains."
+    ),
 });
 
-const ROUTE_DOMAIN_USAGE =
-  "List skill domains or expand one domain into its skill entries. " +
-  "Call with no arguments to see the available domains and their descriptions. " +
-  "Call with a domain name to get that domain's <available_skills> entries " +
-  "(name, description, uri, location); then call `load-skill` with a chosen name. " +
-  "Use this when the user's task matches a domain shown in <skill_domains>: the " +
-  "domain's skills are intentionally kept out of the main catalog to save context.";
+const FIND_SKILLS_USAGE =
+  "Find skills relevant to a task, or expand a skill domain. " +
+  "Call with `task` (a one-line description of what the user asked) as your FIRST " +
+  "action on any non-trivial task: the server scores the task against domain triggers " +
+  "and returns the best-matching domain with its <available_skills> entries, ready for " +
+  "`load-skill`. " +
+  "Call with `domain` to expand one named domain; call with no arguments to list every " +
+  "domain and its triggers. " +
+  "Domain skills are intentionally absent from the main <available_skills> catalog to " +
+  "save context — this tool is how you discover and reach them.";
 
 /** XML-escape for tool-generated text (mirrors skill-discovery.escapeXml). */
-function escapeRouteXml(value: string): string {
+function escapeToolXml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -290,20 +329,41 @@ function escapeRouteXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/** Compact <domains> directory, shared by the no-argument and no-match paths. */
+function renderDomainDirectory(routing: DomainRouting): string {
+  const lines = ["<domains>"];
+  for (const d of routing.domains) {
+    lines.push("<domain>");
+    lines.push(`<name>${escapeToolXml(d.name)}</name>`);
+    if (d.description) lines.push(`<description>${escapeToolXml(d.description)}</description>`);
+    lines.push(`<skill_count>${d.skills.length}</skill_count>`);
+    if (d.triggers.length > 0) {
+      lines.push(`<triggers>${escapeToolXml(d.triggers.join(", "))}</triggers>`);
+    }
+    lines.push("</domain>");
+  }
+  lines.push("</domains>");
+  lines.push(
+    "Call `find-skills-for-task` with a <name> above to expand that domain, or pass " +
+      "`task` to let the server choose the domain. Then `load-skill` a chosen name."
+  );
+  return lines.join("\n");
+}
+
 /**
- * Register the fork's `route-domain` discovery tool.
+ * Register the fork's `find-skills-for-task` discovery tool.
  *
  * The handler re-runs buildDomainRouting on every call so it observes skill
  * changes picked up by the file watcher, and derives eligible (model-invocable)
  * skills from the live shared state. It never mutates skillState.
  */
-function registerRouteDomainTool(server: McpServer, skillState: SkillState): void {
+function registerFindSkillsTool(server: McpServer, skillState: SkillState): void {
   server.registerTool(
-    "route-domain",
+    "find-skills-for-task",
     {
-      title: "Route to Skill Domain",
-      description: ROUTE_DOMAIN_USAGE,
-      inputSchema: RouteDomainSchema,
+      title: "Find Skills for a Task",
+      description: FIND_SKILLS_USAGE,
+      inputSchema: FindSkillsSchema,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -312,7 +372,9 @@ function registerRouteDomainTool(server: McpServer, skillState: SkillState): voi
       },
     },
     async (args): Promise<CallToolResult> => {
-      const { domain } = RouteDomainSchema.parse(args);
+      const { task, domain } = FindSkillsSchema.parse(args);
+      const taskText = (task ?? "").trim();
+      const domainText = (domain ?? "").trim();
       const allSkills = Array.from(skillState.skillMap.values());
       const eligible = getModelInvocableSkills(allSkills);
       const routing: DomainRouting = buildDomainRouting(eligible);
@@ -334,41 +396,84 @@ function registerRouteDomainTool(server: McpServer, skillState: SkillState): voi
         };
       }
 
-      // No argument: compact domain directory.
-      if (domain === undefined || domain.trim() === "") {
+      // Task-aware discovery: the server decides which domain is relevant, so
+      // the model only has to make one fixed call before starting work.
+      if (taskText !== "" && domainText === "") {
+        const suggestions = suggestDomainsForTask(routing, taskText);
+        const scores = scoreTaskAgainstDomains(routing, taskText)
+          .slice(0, 3)
+          .map((m) => `${m.name}=${m.blocked ? "vetoed" : m.score}`)
+          .join(", ");
+        // Observable decisions let operators maintain triggers over time.
+        console.error(
+          `Task skill routing: ${JSON.stringify(taskText)} -> ` +
+            (suggestions.length > 0
+              ? suggestions.map((m) => `${m.name}(${m.score})`).join(", ")
+              : "no match") +
+            ` [scores: ${scores}]`
+        );
+
+        if (suggestions.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  "No domain matched this task. Continue with the global skills in " +
+                  "<available_skills>. If the task does need specialized guidance, pick a " +
+                  "domain below and call `find-skills-for-task` with `domain`.\n\n" +
+                  renderDomainDirectory(routing),
+              },
+            ],
+          };
+        }
+
+        const best = suggestions[0];
+        const evidence = best.hits.length > 0 ? best.hits.join(", ") : best.weakHits.join(", ");
+        const alsoRelevant =
+          suggestions.length > 1
+            ? `<also_relevant>${escapeToolXml(
+                suggestions
+                  .slice(1)
+                  .map((m) => `${m.name} (score ${m.score})`)
+                  .join(", ")
+              )}</also_relevant>\n`
+            : "";
+        const header =
+          `<task_routing>\n` +
+          `<task>${escapeToolXml(taskText)}</task>\n` +
+          `<best_match>${escapeToolXml(best.name)}</best_match>\n` +
+          `<score>${best.score}</score>\n` +
+          `<matched_triggers>${escapeToolXml(evidence)}</matched_triggers>\n` +
+          alsoRelevant +
+          `Load the most relevant skill below with \`load-skill\` BEFORE starting work. ` +
+          `To inspect another domain, call \`find-skills-for-task\` with \`domain\`.\n` +
+          `</task_routing>\n\n`;
+        return {
+          content: [{ type: "text", text: header + generateInstructions(best.domain.skills) }],
+        };
+      }
+
+      // No argument (or an empty task): compact domain directory.
+      if (domainText === "") {
         if (routing.domains.length === 0) {
           return {
             content: [{ type: "text", text: "No domains are configured." }],
           };
         }
-        const lines = ["<domains>"];
-        for (const d of routing.domains) {
-          lines.push("<domain>");
-          lines.push(`<name>${escapeRouteXml(d.name)}</name>`);
-          if (d.description) lines.push(`<description>${escapeRouteXml(d.description)}</description>`);
-          lines.push(`<skill_count>${d.skills.length}</skill_count>`);
-          if (d.triggers.length > 0) {
-            lines.push(`<triggers>${escapeRouteXml(d.triggers.join(", "))}</triggers>`);
-          }
-          lines.push("</domain>");
-        }
-        lines.push("</domains>");
-        lines.push(
-          "Call `route-domain` with a <name> above to load that domain's skill entries, " +
-            "then `load-skill` with a chosen skill name."
-        );
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: renderDomainDirectory(routing) }] };
       }
 
-      // Named domain: expand to catalog XML.
-      const match = routing.domains.find((d) => d.name.toLowerCase() === domain.trim().toLowerCase());
+      // Named domain: expand to catalog XML. An explicit domain always wins
+      // over a task string, so callers can force a domain when scoring is wrong.
+      const match = routing.domains.find((d) => d.name.toLowerCase() === domainText.toLowerCase());
       if (!match) {
         const names = routing.domains.map((d) => d.name).join(", ") || "(none)";
         return {
           content: [
             {
               type: "text",
-              text: `Unknown domain "${domain}". Available domains: ${names}. Call route-domain with no arguments for details.`,
+              text: `Unknown domain "${domainText}". Available domains: ${names}. Call find-skills-for-task with no arguments for details.`,
             },
           ],
           isError: true,

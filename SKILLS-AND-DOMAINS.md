@@ -12,13 +12,15 @@
 「领域」（domain）提供第二层**按需发现**：
 
 ```
-连接握手   →  全局技能全列  +  <skill_domains> 领域索引（只有域名/描述/数量/提示词）
-                                   │ 模型判断任务命中某领域
+连接握手   →  <skill_preflight> 契约 + 全局技能全列 + <skill_domains> 索引（域名/描述/数量/提示词）
+                                   │ 任何非平凡任务开工前（无条件）
                                    ▼
-route-domain("<域>")   →  该领域的 <available_skills> 条目（name / description / uri / location）
+find-skills-for-task(task)  →  服务端按触发词打分 → 最佳领域的 <available_skills> 条目
                                    ▼
 load-skill("<name>")   →  完整 SKILL.md（和原来完全一样）
 ```
+
+`<skill_preflight>` 位于 `instructions` 最前面，是一段约 500 B 的固定契约：要求模型在**任何非平凡任务开始前**先调用一次 `find-skills-for-task` 并传入一句话 `task`，由服务端用 `triggers` / `antiTriggers` 选出该展开的领域，再 `load-skill`。这样做的原因是：技能名字被收进领域后，模型看不到它们，就无法判断「是否有技能与任务相关」，条件式提醒（「相关就先加载」）永远不会触发。把触发条件改成「任务开始」、把判断交给代码，模型只需执行一个固定动作。传 `task` 永远安全：没有命中时返回领域目录并提示继续用全局技能。
 
 **核心不变量（务必记住）**：领域路由只改变「模型默认看到的目录」，**不改变技能本身的可达性**。被划入领域的技能依然能被 `load-skill` 按名字加载，也依然出现在 `resources/list`、SEP-2640 的 `skills/list` / `skills/get` 以及 prompts 里。**清单里看不见 ≠ 不能调用。**
 
@@ -33,10 +35,12 @@ load-skill("<name>")   →  完整 SKILL.md（和原来完全一样）
 | **技能（skill）** | 技能库根目录下的一个子目录，内含 `SKILL.md`（必需）及可选的脚本、参考资料、资产 |
 | **全局技能** | 未归属任何领域的技能，直接出现在主 catalog 的 `<available_skills>` 中 |
 | **领域（domain）** | 一组相关技能的命名分组；主 catalog 只暴露它的名字/描述/数量，不列出成员 |
-| **`route-domain`** | 服务端提供的只读工具。无参调用列出所有领域；传域名返回该领域的技能条目 |
+| **`find-skills-for-task`** | 服务端提供的只读工具。传 `task` 由服务端打分并返回最佳领域的技能条目；传 `domain` 展开指定领域；无参调用列出所有领域 |
 | **`load-skill`** | 既有工具，按技能名返回完整 `SKILL.md`；领域路由不改变它 |
 | **`domains.json`** | 领域映射配置文件，集中声明「领域 → 技能名单」 |
 | **base name / qualified name** | `name` = SKILL.md frontmatter 里的名字；qualified name = `<来源前缀>__<base name>`，本地技能库的前缀是技能根目录的**文件夹名**（见 §3.3） |
+
+> **工具改名**：本分支早期把发现工具命名为 `route-domain`，现已改为 `find-skills-for-task`（名字里直接体现「技能」与「任务」）。旧名**不注册别名**，已保存的提示词 / 客户端片段需同步更新并重启客户端；启动参数（技能目录路径、`--domain-map`）不受影响。
 
 ---
 
@@ -77,7 +81,7 @@ load-skill("<name>")   →  完整 SKILL.md（和原来完全一样）
 | `name` | string | ✅ | 技能名，即 base name。缺失或为空 → 该技能被跳过 |
 | `description` | string | ✅ | 一句话说明用途，会出现在 catalog 里供模型判断。缺失或为空 → 被跳过 |
 | `domain` / `domains` | string / string[] | 否 | 领域标记，作为 `domains.json` 的可移植兜底（见 §5.3） |
-| `disable-model-invocation` | boolean | 否 | `true` 时该技能不进入模型可见的 catalog，也不进入 `route-domain` 结果；适合只供用户手动调用的技能 |
+| `disable-model-invocation` | boolean | 否 | `true` 时该技能不进入模型可见的 catalog，也不进入 `find-skills-for-task` 结果；适合只供用户手动调用的技能 |
 | `user-invocable` | boolean | 否 | `false` 时不出现在 prompts 菜单，默认 `true` |
 
 最小示例：
@@ -114,7 +118,7 @@ description: 构建与评审设计系统、组件规范、配色与排版，适�
    - 想让它**按需加载** → 按 §5 把它加进 `domains.json`，或在 SKILL.md frontmatter 写 `domain:`。
 5. **验证**（见 §8）：确认技能被发现、能 `load-skill`、领域路由按预期工作。
 
-> **重启提醒**：stdio 模式下 `instructions` 在启动时就冻结了。新增技能后，主 catalog 的变化需要**重启客户端 / 重连 MCP** 才会体现；但 `route-domain` 工具每次调用都会重新读取映射和技能状态，所以领域展开是准实时的。为避免「主目录和路由结果短暂不一致」，改完配置后建议重启一次。
+> **重启提醒**：stdio 模式下 `instructions` 在启动时就冻结了。新增技能后，主 catalog 的变化需要**重启客户端 / 重连 MCP** 才会体现；但 `find-skills-for-task` 工具每次调用都会重新读取映射和技能状态，所以领域展开是准实时的。为避免「主目录和路由结果短暂不一致」，改完配置后建议重启一次。
 
 ---
 
@@ -161,10 +165,10 @@ description: 构建与评审设计系统、组件规范、配色与排版，适�
 | --- | --- | --- | --- |
 | `version` | number | 否 | 建议填 `1`，便于将来演进 |
 | `domains` | array | ✅ | 领域列表；缺失或不是数组 → 映射无效 |
-| `domains[].name` | string | ✅ | 领域名，唯一（忽略大小写）；`route-domain` 用它作参数 |
+| `domains[].name` | string | ✅ | 领域名，唯一（忽略大小写）；`find-skills-for-task` 用它作参数 |
 | `domains[].description` | string | 否 | 写进领域索引，帮助模型判断该不该展开 |
-| `domains[].triggers` | string[] | 否 | 命中提示词，中英文都写用户会说的话 |
-| `domains[].antiTriggers` | string[] | 否 | 排除信号，减少误展开 |
+| `domains[].triggers` | string[] | 否 | 命中提示词，中英文都写用户会说的话；**传 `task` 时是服务端打分依据**（中文 +3 / 英文 +2），不是纯注释 |
+| `domains[].antiTriggers` | string[] | 否 | 排除信号；传 `task` 时任一命中直接**否决该领域** |
 | `domains[].skills` | string[] | ✅ | 成员技能名（base name 或 qualified name） |
 
 ### 5.3 三种标记方式（任选，推荐第一种）
@@ -191,7 +195,8 @@ description: 构建与评审设计系统、组件规范、配色与排版，适�
 - **`triggers`**：写用户真实会说的词（「落地页」「配色」「E2E」「截图」），中英文都写；不要写文件名。
 - **`antiTriggers`**：写最容易误命中的反面场景。
 - **`description`**：一句话回答「什么任务该展开这个域」。
-- ⚠️ `triggers` / `antiTriggers` 目前只是写进领域索引、**作为给模型的提示信号**，服务端**不会**据此自动匹配。真正决定展不展开的是模型读到索引后的判断。
+- `triggers` / `antiTriggers` **同时**是索引里的提示信号和 `find-skills-for-task(task)` 的服务端打分规则：中文按子串（+3）、英文按词边界（+2）、`description` 词提供弱证据（+1）、`antiTriggers` 命中即否决、次名需达首名 70% 才一并返回。每次打分都会在 stderr 打印 `Task skill routing: …`，可据此长期调词表。
+- ⚠️ 打分是**字面匹配**，不是语义检索。避免把过泛的单词（「设计」「测试」「文档」）单独当 trigger，改用复合词（「界面设计」「E2E 用例」「README 润色」），否则容易误召回；领域总数少时无需引入 BM25 / embedding。
 - 技能超过 100 个时：先分成 8–15 个域、每域 5–15 个技能；再往后才需要考虑域内检索（BM25 / top-N 中文分词）。
 
 ---
@@ -254,12 +259,13 @@ domain routing: ON — 2 domain(s) [design=4, test=2], 11 global skill(s); map: 
 
 用任意 MCP 客户端或一段 JSON-RPC 脚本依次确认：
 
-1. `initialize` → `instructions` 含**全部全局技能** + `<skill_domains>` 索引；**领域技能不出现**在 `<available_skills>` 里。
-2. `tools/call route-domain`（不传参数）→ 返回所有领域及其描述。
-3. `tools/call route-domain {"domain":"<域名>"}` → 返回该领域的技能条目；未知域名应报错。
-4. `tools/call load-skill {"name":"<qualified name>"}` → 领域技能仍能正常加载全文（**可达性不变量**）。
-5. `resources/list` → 数量合理；`assets/` 等资产默认不在清单里，但 `resources/read` 能读到。
-6. stderr 无 `SEP-2640` 超限警告、无 `skill "<x>" not found` 警告；stdout 全部是合法 JSON-RPC（stdio 模式下不能混入日志）。
+1. `initialize` → `instructions` **以 `<skill_preflight>` 开头**，含全部全局技能 + `<skill_domains>` 索引；**领域技能不出现**在 `<available_skills>` 里。
+2. `tools/call find-skills-for-task {"task":"<一句真实任务>"}` → 返回 `<task_routing>`（域名/得分/命中词）+ 该领域技能条目；stderr 有 `Task skill routing: …` 记录。
+3. `tools/call find-skills-for-task {"task":"<无关任务>"}` → 提示未命中并返回 `<domains>` 目录（fail-open）。
+4. `tools/call find-skills-for-task`（不传参数）→ 返回所有领域及其描述；传 `domain` → 展开指定领域；未知域名应报错。
+5. `tools/call load-skill {"name":"<qualified name>"}` → 领域技能仍能正常加载全文（**可达性不变量**）。
+6. `resources/list` → 数量合理；`assets/` 等资产默认不在清单里，但 `resources/read` 能读到。
+7. stderr 无 `SEP-2640` 超限警告、无 `skill "<x>" not found` 警告；stdout 全部是合法 JSON-RPC（stdio 模式下不能混入日志）。
 
 ### 8.3 常见问题
 
@@ -268,7 +274,9 @@ domain routing: ON — 2 domain(s) [design=4, test=2], 11 global skill(s); map: 
 | 新技能完全没出现 | 不是根目录的直接子目录 / 缺 `SKILL.md` / frontmatter 缺 `name` 或 `description` / 是符号链接 | 按 §3.1–3.2 逐项检查 |
 | 技能一直显示为全局 | 没进任何 `skills[]`，frontmatter 也没有 `domain` | 按 §5 补标记 |
 | 改了 `domains.json` 但主 catalog 没变 | stdio 下 `instructions` 启动时冻结 | 重启客户端 / 重连 MCP（§4） |
-| `route-domain` 返回 “not active” | 映射缺失/非法触发了 fail-open，或设了 `off` | 看 stderr 警告，修正 JSON 或路径 |
+| `find-skills-for-task` 返回 “not active” | 映射缺失/非法触发了 fail-open，或设了 `off` | 看 stderr 警告，修正 JSON 或路径 |
+| 传 `task` 总是未命中 | 触发词太泛或太窄、任务说法与词表不一致 | 看 stderr 的 `Task skill routing:` 打分明细，按 §5.5 调整 `triggers`；临时可改传 `domain` |
+| 模型仍然不主动调用工具 | 客户端把 MCP `instructions` 放在低权重区 | 确认握手文本含 `<skill_preflight>`；必要时在宿主一等规则里重申同一句契约，或换用支持 MCP Skills Extension 的宿主 |
 | 日志出现 `skill "X" not found (ignored)` | `skills[]` 里名字写错，或该技能未被发现 | 用 base name 核对拼写 |
 | 日志出现 `already assigned to another domain` | 同一技能被多个域认领 | 只保留一个域的登记 |
 | 某个 `.md` 没出现在资源清单 | 它在 `assets/` 或其他被忽略的目录里 | 白名单下调整 `--ignore-dirs`；或用 `resources/directory/read` 直接浏览（清单隐藏不影响读取） |
@@ -292,6 +300,9 @@ domain routing: ON — 2 domain(s) [design=4, test=2], 11 global skill(s); map: 
 | `--exclude-extensions=...` | `SKILLJACK_EXCLUDE_EXTENSIONS` | 56 种二进制类型 | 黑名单排除的后缀（替换） |
 | `--resource-filter=off` | `SKILLJACK_RESOURCE_FILTER=off` | on | 完全关闭清单过滤 |
 | `--tools=<auto\|always\|never>` | `SKILLJACK_TOOLS` | `auto` | 控制 `load-skill` / `skill-resource` 的可见性 |
+| `--ui-tools=<on\|off>` | `SKILLJACK_UI_TOOLS` | `off` | 恢复已弃用的上游 `skill-config-*` / `skill-display-*` 工具、UI prompts 与 `ui://` 资源（默认全部不注册） |
+
+> **上游 UI 工具已弃用**：默认的 `tools/list` 只有 `load-skill`、`skill-resource`、`find-skills-for-task` 三个。若某个宿主确实能渲染 MCP Apps，用 `--ui-tools=on` 一次性恢复整套界面；不要在 `domains.json` 或技能 frontmatter 里引用 `skill-display-update-invocation`，它默认不存在。配置文件读取（`~/.skilljack/config.json`）不受影响。
 
 标准 MCP 客户端配置示例（以 stdio 传输为例，路径换成你自己的）：
 
@@ -324,7 +335,8 @@ domain routing: ON — 2 domain(s) [design=4, test=2], 11 global skill(s); map: 
 - 清单过滤（白名单/黑名单）只影响自动枚举，**显式读取与磁盘路径执行始终可用**。
 - 领域映射失效时 **fail-open**：全部技能退回全局，服务照常运行。
 - 领域索引的 token 成本是 **O(领域数)**，不是 O(技能数)——这是它能扩展到 100+ 技能的关键。
-- `triggers` / `antiTriggers` 只是给模型的提示，**没有服务端自动路由**。
+- `triggers` / `antiTriggers` 既是索引里的提示，也是 `find-skills-for-task(task)` 的**服务端打分规则**；打分只影响「推荐展开哪个域」，**不移除任何技能的可达性**，未命中时 fail-open。
+- `<skill_preflight>` 只在领域路由生效时注入；路由关闭后 `instructions` 与上游一致。
 - stdio 下 `instructions` 启动时冻结；改配置后**重启客户端**才能看到一致的主 catalog。
 
 ---

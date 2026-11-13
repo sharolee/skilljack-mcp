@@ -5,6 +5,11 @@
  * - skill-display: Opens the skill display UI
  * - skill-display-update-invocation: Updates invocation settings (UI-only)
  * - skill-display-reset-override: Resets a skill to frontmatter defaults (UI-only)
+ *
+ * @deprecated Fork: this whole UI surface is off by default. It is registered
+ * only with `--ui-tools=on` (or `SKILLJACK_UI_TOOLS=on`) and only on stdio in
+ * non-static mode. Kept in the tree so upstream changes can still be merged;
+ * domain/invocation maintenance now lives in the standalone admin console.
  */
 
 import * as fs from "node:fs";
