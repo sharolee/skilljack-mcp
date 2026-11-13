@@ -364,6 +364,28 @@ tbody tr.row-invalid { background: var(--row-invalid); }
 .dc-name:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
 .dc-count { font-size: 10px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
+/* Collapsible domain cards: collapsed by default, showing name + skill count +
+   a wrapped small description; click (chevron or header) to expand the editor. */
+.dc-toggle {
+  flex: 0 0 auto; width: 18px; height: 18px; padding: 0; margin-left: -3px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--muted);
+  font-size: 11px; line-height: 1; cursor: pointer;
+  display: grid; place-items: center;
+  transition: background .12s, color .12s;
+}
+.dc-toggle:hover { background: var(--hover); color: var(--text); }
+.dc-name-static {
+  flex: 1; min-width: 0; font-size: 12.5px; font-weight: 650; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+/* Dim the delete affordance when collapsed so it doesn't fight the summary. */
+.dc-del-collapsed { opacity: .5; }
+.dc-del-collapsed:hover { opacity: 1; background: var(--danger-soft); color: var(--danger); }
+.dc-collapsed-desc {
+  margin-top: 5px; font-size: 10.5px; line-height: 1.5; color: var(--muted);
+  word-break: break-word; white-space: normal;
+}
+
 .dc-field {
   display: grid; grid-template-columns: 48px minmax(0, 1fr);
   align-items: center; gap: 6px; margin-top: 5px;

@@ -127,6 +127,8 @@ let dirty = false;
 let selected = new Set<string>();
 let searchQuery = "";
 let filterValue = "__all__";
+/** Indices (into draft) of domain cards the user has expanded; default = collapsed. */
+let expandedDomains = new Set<number>();
 
 function frontmatterTags(skill: Skill): string[] {
   const raw = skill.frontmatter["domain"] ?? skill.frontmatter["domains"];
@@ -346,6 +348,7 @@ function renderDomains(): void {
   el("domainList").innerHTML = draft.length === 0
     ? `<div class="empty-inline">还没有领域。点击「+ 新建领域」，或在左侧多选技能后批量分配。</div>`
     : draft.map((d, i) => {
+      const open = expandedDomains.has(i);
       const members = d.skills.map((raw) => {
         const s = skillByRaw(raw);
         return `<span class="chip" title="${esc(raw)}">${esc(s?.name ?? raw)}<button class="chip-x" data-index="${i}" data-raw="${esc(raw)}" title="移回全局">×</button></span>`;
@@ -355,17 +358,24 @@ function renderDomains(): void {
         !d.skills.some((raw) => skillByRaw(raw)?.dirName === s.dirName)
       ).length : 0;
       return `
-        <div class="domain-card" data-index="${i}">
+        <div class="domain-card${open ? "" : " collapsed"}" data-index="${i}">
           <div class="dc-head">
-            <input class="dc-name" data-index="${i}" value="${esc(d.name)}" aria-label="领域名称" spellcheck="false">
+            <button class="dc-toggle" data-index="${i}" type="button" aria-expanded="${open}" title="${open ? "收起" : "展开编辑"}" aria-label="${open ? "收起领域" : "展开领域"}">${open ? "▾" : "▸"}</button>
+            ${open
+              ? `<input class="dc-name" data-index="${i}" value="${esc(d.name)}" aria-label="领域名称" spellcheck="false">`
+              : `<span class="dc-name-static" title="${esc(d.name)}">${esc(d.name)}</span>`}
             <span class="dc-count">${counts[d.name] ?? 0} 个技能</span>
-            <button class="icon-btn dc-del" data-index="${i}" title="删除领域（成员移回全局）" aria-label="删除领域">×</button>
+            <button class="icon-btn dc-del${open ? "" : " dc-del-collapsed"}" data-index="${i}" title="删除领域（成员移回全局）" aria-label="删除领域">×</button>
           </div>
-          <label class="dc-field"><span>描述</span><input class="dc-desc" data-index="${i}" value="${esc(d.description ?? "")}" placeholder="什么时候该展开这个领域"></label>
-          <label class="dc-field"><span>触发词</span><input class="dc-triggers" data-index="${i}" value="${esc((d.triggers ?? []).join(", "))}" placeholder="逗号分隔，中英文皆可"></label>
-          <label class="dc-field"><span>排除词</span><input class="dc-anti" data-index="${i}" value="${esc((d.antiTriggers ?? []).join(", "))}" placeholder="容易误命中的反面场景"></label>
-          <div class="dc-members">${members || `<span class="muted">暂无成员</span>`}</div>
-          ${fmCount > 0 ? `<div class="dc-note">另有 ${fmCount} 个技能由 SKILL.md 的 <code>domain</code> 自动归入；要移出需修改该技能文件。</div>` : ""}
+          ${open ? `
+            <label class="dc-field"><span>描述</span><input class="dc-desc" data-index="${i}" value="${esc(d.description ?? "")}" placeholder="什么时候该展开这个领域"></label>
+            <label class="dc-field"><span>触发词</span><input class="dc-triggers" data-index="${i}" value="${esc((d.triggers ?? []).join(", "))}" placeholder="逗号分隔，中英文皆可"></label>
+            <label class="dc-field"><span>排除词</span><input class="dc-anti" data-index="${i}" value="${esc((d.antiTriggers ?? []).join(", "))}" placeholder="容易误命中的反面场景"></label>
+            <div class="dc-members">${members || `<span class="muted">暂无成员</span>`}</div>
+            ${fmCount > 0 ? `<div class="dc-note">另有 ${fmCount} 个技能由 SKILL.md 的 <code>domain</code> 自动归入；要移出需修改该技能文件。</div>` : ""}
+          ` : `
+            <div class="dc-collapsed-desc">${esc(d.description || "（暂无描述，点击展开编辑）")}</div>
+          `}
         </div>
       `;
     }).join("");
@@ -446,6 +456,7 @@ function applyBulk(target: string): void {
   toast(target === "__global__" ? "已移回全局（记得保存）" : `已分配到「${domainName}」（记得保存）`, "info");
 
   if (target === "__new__") {
+    expandedDomains.add(draft.length - 1);
     const card = document.querySelector<HTMLInputElement>(`.dc-name[data-index="${draft.length - 1}"]`);
     card?.focus();
     card?.select();
@@ -467,6 +478,7 @@ async function loadState(): Promise<void> {
   draft = clone(state.domains);
   dirty = false;
   selected.clear();
+  expandedDomains.clear();
   renderAll();
 }
 
@@ -516,6 +528,7 @@ async function applySettings(): Promise<void> {
     draft = clone(state.domains);
     dirty = false;
     selected.clear();
+    expandedDomains.clear();
     renderAll();
     hideModal("settingsModal");
     toast(`路径已保存并重新扫描：${state.configStorePath ?? "配置文件"}`, "success");
@@ -624,6 +637,7 @@ el("btnAddDomain").addEventListener("click", () => {
   let n = 1;
   while (draft.some((d) => d.name === `new-domain-${n}`)) n += 1;
   draft.push({ name: `new-domain-${n}`, description: "", triggers: [], antiTriggers: [], skills: [] });
+  expandedDomains.add(draft.length - 1);
   markDirty(true);
   const input = document.querySelector<HTMLInputElement>(`.dc-name[data-index="${draft.length - 1}"]`);
   input?.focus();
@@ -645,12 +659,37 @@ el("domainList").addEventListener("input", (e) => {
 
 el("domainList").addEventListener("click", (e) => {
   const target = e.target as HTMLElement;
+
+  // Chevron toggles collapse/expand explicitly.
+  const toggle = target.closest<HTMLButtonElement>(".dc-toggle");
+  if (toggle) {
+    const i = Number(toggle.dataset.index);
+    if (expandedDomains.has(i)) expandedDomains.delete(i); else expandedDomains.add(i);
+    renderDomains();
+    return;
+  }
+
+  // Clicking anywhere on a collapsed card (except delete) expands it.
+  const card = target.closest<HTMLElement>(".domain-card");
+  if (card && card.classList.contains("collapsed") && !target.closest(".dc-del")) {
+    expandedDomains.add(Number(card.dataset.index));
+    renderDomains();
+    return;
+  }
+
   const del = target.closest<HTMLButtonElement>(".dc-del");
   if (del) {
     const i = Number(del.dataset.index);
     const name = draft[i]?.name;
     if (name && !window.confirm(`删除领域「${name}」？其成员将移回全局。\n（若成员还在 SKILL.md frontmatter 里写了 domain，需另行修改文件。）`)) return;
     draft.splice(i, 1);
+    // Keep the expanded-set aligned with shifted indices after the splice.
+    const next = new Set<number>();
+    for (const idx of expandedDomains) {
+      if (idx < i) next.add(idx);
+      else if (idx > i) next.add(idx - 1);
+    }
+    expandedDomains = next;
     markDirty(true);
     return;
   }
